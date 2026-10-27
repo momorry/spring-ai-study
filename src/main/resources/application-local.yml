@@ -1,0 +1,10 @@
+spring:
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      base-url: ${OPENAI_BASE_URL:''}
+      chat:
+        completions-path: ${OPENAI_COMPLETIONS_PATH:/chat/completions}
+        options:
+          model: ${OPENAI_MODEL_NAME:external-deepseek-v4-flash}
+          temperature: 0.7
