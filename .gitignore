@@ -2,10 +2,16 @@ target/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
-.kotlin
-src/main/resources/.env
+
+### Environment files ###
+.env
 .env.*
 !.env.example
+**/src/main/resources/.env
+
+### Workspace directories ###
+workspace/
+**/workspace/
 
 ### IntelliJ IDEA ###
 .idea/modules.xml
