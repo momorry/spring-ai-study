@@ -1,5 +1,14 @@
 import request from '@/utils/request'
 
+// 构造带 JWT token 的请求头（原生 fetch 不走 axios 拦截器）
+function authHeaders(extra = {}) {
+  const token = localStorage.getItem('token')
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {})
+  }
+}
+
 /**
  * 发送聊天消息（流式）
  * @param {string} endpoint - API 端点路径
@@ -41,10 +50,10 @@ export function sendChatMessageStream(endpoint, data, onEvent) {
 
   fetch(endpoint, {
     method: 'POST',
-    headers: {
+    headers: authHeaders({
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream'
-    },
+    }),
     body: JSON.stringify({
       message: data.message,
       sessionId: data.sessionId || '1',
@@ -112,6 +121,24 @@ export function sendChatMessageStream(endpoint, data, onEvent) {
 }
 
 /**
+ * 停止当前对话生成
+ * @param {Object} data - 请求数据
+ * @param {string} data.sessionId - 会话 ID
+ * @param {number} data.userId - 用户 ID
+ * @returns {Promise}
+ */
+export function stopConversation(data) {
+  return request({
+    url: '/reactagent/conversation/stop',
+    method: 'post',
+    data: {
+      sessionId: data.sessionId || '1',
+      userId: data.userId || 1
+    }
+  })
+}
+
+/**
  * 发送聊天消息（非流式，向后兼容）
  * @param {string} endpoint - API 端点路径
  * @param {Object} data - 请求数据
@@ -147,6 +174,19 @@ export function getChatHistory(endpoint, sessionId) {
 }
 
 /**
+ * 加载会话历史消息（从 AgentScope 持久化存储）
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise}
+ */
+export function loadConversationHistory(sessionId) {
+  return request({
+    url: '/reactagent/conversation/history',
+    method: 'get',
+    params: { sessionId }
+  })
+}
+
+/**
  * 清空对话历史
  * @param {string} endpoint - API 端点路径
  * @param {string} sessionId - 会话 ID
@@ -173,9 +213,9 @@ export function sendStreamChatMessage(endpoint, data, onMessage, onError) {
   
   fetch(endpoint, {
     method: 'POST',
-    headers: {
+    headers: authHeaders({
       'Content-Type': 'application/json',
-    },
+    }),
     body: JSON.stringify({
       message: data.message,
       history: data.history || [],

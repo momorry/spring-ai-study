@@ -17,13 +17,29 @@
     
     <name>AgentScope Demo</name>
     <description>AgentScope 2.0 demonstration module</description>
-    
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- 覆盖父 POM(Spring Boot 4.1.1) 管理的 JUnit 6.0.3，锁定为本地已缓存的 5.12.2，
+                 以便离线环境下 surefire 能解析到 junit-platform-launcher:1.12.2 -->
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>5.12.2</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
 
         <!-- Spring Boot Starters -->
+        <!-- Web 层采用 Spring MVC（Servlet 栈）；大模型流式对话仍返回 Flux，
+             由 MVC 自动适配为 SSE。reactor-core 由 agentscope-core 传递引入，无需 webflux。 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
+            <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
         <dependency>
@@ -45,7 +61,75 @@
             <artifactId>agentscope-extensions-model-openai</artifactId>
             <version>2.0.4</version>
         </dependency>
+
+        <!-- AgentScope MySQL 持久化扩展：将 Agent 会话状态存储到 MySQL（agentscope_sessions 表） -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-mysql</artifactId>
+            <version>2.0.4</version>
+            <scope>compile</scope>
+        </dependency>
         
+        <!-- Database: Spring DataSource + MyBatis-Plus -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Spring Boot 4.x 必须使用 boot4 starter（>= 3.5.15） -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
+            <version>3.5.17</version>
+        </dependency>
+
+        <!-- MyBatis-Plus 分页插件依赖：3.5.9 起 PaginationInnerInterceptor 从 extension 拆分至独立的
+             mybatis-plus-jsqlparser 模块（依赖 JSqlParser），需显式引入才能使用 MP 分页 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+            <version>3.5.17</version>
+        </dependency>
+
+        <!-- MyBatis-Plus 代码生成器 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-generator</artifactId>
+            <version>3.5.17</version>
+        </dependency>
+
+        <!-- 代码生成器模板引擎（Velocity，渲染 .vm 模板，版本与 generator 内置一致） -->
+        <dependency>
+            <groupId>org.apache.velocity</groupId>
+            <artifactId>velocity-engine-core</artifactId>
+            <version>2.4.1</version>
+        </dependency>
+
+        <!-- JWT -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.13.0</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.13.0</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.13.0</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Utilities -->
         <dependency>
             <groupId>cn.hutool</groupId>
@@ -57,6 +141,18 @@
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>
+        </dependency>
+
+        <!-- Test: JUnit 5（版本由上方 junit-bom 统一管理为 5.12.2） -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
     
@@ -84,6 +180,12 @@
                         <arg>-parameters</arg>
                     </compilerArgs>
                 </configuration>
+            </plugin>
+            <!-- 固定 surefire 版本，与本地已缓存的 surefire-junit-platform provider 匹配 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.3</version>
             </plugin>
         </plugins>
     </build>

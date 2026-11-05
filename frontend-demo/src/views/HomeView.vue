@@ -130,7 +130,10 @@ const showMessage = () => {
   gap: 8px;
   font-size: 18px;
   font-weight: bold;
-  color: #409eff;
+  background: linear-gradient(135deg, #F48C06, #E85D04);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .header-menu {

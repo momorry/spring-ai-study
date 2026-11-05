@@ -10,7 +10,7 @@
           <el-card class="info-card" shadow="hover">
             <template #header>
               <div class="card-header">
-                <el-icon :size="24" color="#409eff"><Connection /></el-icon>
+                <el-icon :size="24" color="#E85D04"><Connection /></el-icon>
                 <span>关于 Harness Agent</span>
               </div>
             </template>

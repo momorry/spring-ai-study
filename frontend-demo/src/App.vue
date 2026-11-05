@@ -1,13 +1,12 @@
 <template>
   <el-config-provider :locale="locale">
-    <MainLayout />
+    <router-view />
   </el-config-provider>
 </template>
 
 <script setup>
 import { ref } from 'vue'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
-import MainLayout from '@/views/MainLayout.vue'
 
 const locale = ref(zhCn)
 </script>
@@ -26,5 +25,20 @@ const locale = ref(zhCn)
 body {
   margin: 0;
   padding: 0;
+}
+
+/* Element Plus 秋天主题色覆盖 */
+:root {
+  --el-color-primary: #E85D04;
+  --el-color-primary-light-1: #F48C06;
+  --el-color-primary-light-2: #FAA307;
+  --el-color-primary-light-3: #FFBA08;
+  --el-color-primary-light-4: #FFD166;
+  --el-color-primary-light-5: #FFE6A3;
+  --el-color-primary-light-6: #FFF3D6;
+  --el-color-primary-light-7: #FFF8E8;
+  --el-color-primary-light-8: #FFFBF2;
+  --el-color-primary-light-9: #FFFEF9;
+  --el-color-primary-dark-2: #DC2F02;
 }
 </style>

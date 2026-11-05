@@ -1,5 +1,6 @@
 package com.moli.agent.scope.harness.middleware;
 
+import com.moli.agent.scope.common.dao.manager.MChatMessageFileManager;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -24,7 +25,8 @@ import java.util.function.Function;
 
 /**
  * 对话产物生成中间件：在每次 Agent 调用结束后，
- * 将用户输入和 AI 回复追加写入一个 TXT 文件作为产物输出。
+ * 将用户输入和 AI 回复追加写入一个 TXT 文件作为产物输出，
+ * 同时将产物信息持久化到数据库，以便历史消息查询时能够还原。
  */
 public class FileGenMiddleware implements MiddlewareBase {
 
@@ -36,6 +38,18 @@ public class FileGenMiddleware implements MiddlewareBase {
 
     /** CustomEvent 的 name 标识：产物文件已生成 */
     public static final String EVENT_FILE_GENERATED = "file_generated";
+
+    /** 消息文件产物管理器（通过构造函数注入） */
+    private final MChatMessageFileManager messageFileManager;
+
+    /**
+     * 构造函数。
+     *
+     * @param messageFileManager 消息文件产物管理器，用于持久化文件产物记录
+     */
+    public FileGenMiddleware(MChatMessageFileManager messageFileManager) {
+        this.messageFileManager = messageFileManager;
+    }
 
     @Override
     public Flux<AgentEvent> onAgent(Agent agent, RuntimeContext ctx, AgentInput input,
@@ -52,9 +66,11 @@ public class FileGenMiddleware implements MiddlewareBase {
 
         // 收集 AI 回复（从 AgentResultEvent 中提取）
         List<String> assistantTexts = new ArrayList<>();
+        // 收集回复ID（用于关联文件产物）
+        List<String> replyIds = new ArrayList<>();
 
         return next.apply(input)
-                // 拦截事件流，提取 AgentResultEvent 中的回复消息
+                // 拦截事件流，提取 AgentResultEvent 中的回复消息和 replyId
                 .doOnNext(event -> {
                     if (event instanceof AgentResultEvent resultEvent) {
                         Msg result = resultEvent.getResult();
@@ -63,6 +79,11 @@ public class FileGenMiddleware implements MiddlewareBase {
                             if (text != null && !text.isBlank()) {
                                 assistantTexts.add(text);
                             }
+                            // 提取 replyId（从 Msg 的 id 字段或 metadata 中获取）
+                            String replyId = extractReplyId(result);
+                            if (replyId != null && !replyId.isBlank()) {
+                                replyIds.add(replyId);
+                            }
                         }
                     }
                 })
@@ -70,18 +91,53 @@ public class FileGenMiddleware implements MiddlewareBase {
                 .concatWith(Flux.defer(() -> {
                     Path filePath = writeConversationToFile(ctx, userTexts, assistantTexts);
                     if (filePath != null) {
+                        // 使用最后一个 replyId（如果有）
+                        String replyId = replyIds.isEmpty() ? null : replyIds.get(replyIds.size() - 1);
+                        // 持久化文件产物记录到数据库
+                        persistFileRecord(ctx, filePath, replyId);
+
                         CustomEvent fileEvent = new CustomEvent(
                                 EVENT_FILE_GENERATED,
                                 Map.of(
                                         "filePath", filePath.toAbsolutePath().toString(),
                                         "sessionId", ctx.getSessionId() != null ? ctx.getSessionId() : "default",
-                                        "userId", ctx.getUserId() != null ? ctx.getUserId() : "unknown"
+                                        "userId", ctx.getUserId() != null ? ctx.getUserId() : "unknown",
+                                        "replyId", replyId != null ? replyId : ""
                                 )
                         );
                         return Flux.just(fileEvent);
                     }
                     return Flux.empty();
                 }));
+    }
+
+    /**
+     * 从 Msg 中提取 replyId。
+     * 优先尝试 getId()，如果不存在则从 metadata 中获取。
+     */
+    private String extractReplyId(Msg msg) {
+        // 尝试从 Msg 的 id 字段获取
+        try {
+            String id = msg.getId();
+            if (id != null && !id.isBlank()) {
+                return id;
+            }
+        } catch (Exception e) {
+            // getId() 方法不存在，忽略
+        }
+        // 尝试从 metadata 中获取
+        if (msg.getMetadata() != null) {
+            Object replyIdObj = msg.getMetadata().get("replyId");
+            if (replyIdObj instanceof String replyId) {
+                return replyId;
+            }
+            // 尝试其他可能的键名
+            replyIdObj = msg.getMetadata().get("id");
+            if (replyIdObj instanceof String replyId) {
+                return replyId;
+            }
+        }
+        return null;
     }
 
     /**
@@ -128,6 +184,46 @@ public class FileGenMiddleware implements MiddlewareBase {
         } catch (IOException e) {
             System.err.println("[FileGenMiddleware] 写入对话产物失败: " + e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * 将文件产物记录持久化到数据库。
+     * 失败时仅打印日志，不影响主流程。
+     */
+    private void persistFileRecord(RuntimeContext ctx, Path filePath, String replyId) {
+        try {
+            String sessionId = ctx.getSessionId() != null ? ctx.getSessionId() : "default";
+            Long userId = ctx.getUserId() != null ? Long.parseLong(ctx.getUserId()) : null;
+            if (userId == null) {
+                System.err.println("[FileGenMiddleware] 无法解析 userId，跳过持久化文件记录");
+                return;
+            }
+
+            // 生成一个默认的 replyId（如果没有从 Msg 中提取到）
+            if (replyId == null || replyId.isBlank()) {
+                replyId = "reply_" + sessionId + "_" + System.currentTimeMillis();
+                System.out.println("[FileGenMiddleware] 未找到 replyId，使用生成的默认值: " + replyId);
+            }
+
+            // 从完整路径提取文件名
+            String fileName = filePath.getFileName().toString();
+            String fileUrl = filePath.toAbsolutePath().toString();
+
+            // 读取文件大小
+            Long fileSize = null;
+            try {
+                fileSize = Files.size(filePath);
+            } catch (IOException e) {
+                System.err.println("[FileGenMiddleware] 读取文件大小失败: " + e.getMessage());
+            }
+
+            messageFileManager.saveFileRecord(userId, sessionId, replyId, fileName, fileUrl, fileSize, "text/plain");
+            System.out.println("[FileGenMiddleware] 文件产物记录已持久化: sessionId=" + sessionId
+                    + ", replyId=" + replyId + ", fileName=" + fileName);
+        } catch (Exception e) {
+            // 持久化失败不影响本次对话，仅打印告警日志
+            System.err.println("[FileGenMiddleware] 持久化文件产物记录失败（不影响本次对话）: " + e.getMessage());
         }
     }
 }

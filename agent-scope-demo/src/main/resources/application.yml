@@ -4,3 +4,24 @@ spring:
 
 server:
   port: 8081
+
+# JWT 认证配置
+jwt:
+  # HS256 签名密钥（Base64 编码，至少 32 字节），生产环境请通过环境变量注入
+  secret: bW9saS1hZ2VudC1zY29wZS1qd3Qtc2VjcmV0LWtleS0yMDI2LWF1dGg=
+  # token 有效期（秒），默认 24 小时
+  expire-seconds: 86400
+  # token 请求头名称
+  header: Authorization
+  # token 前缀
+  prefix: "Bearer "
+
+# AgentScope 会话状态 MySQL 持久化（agentscope-extensions-mysql）
+agentscope:
+  state-store:
+    # 状态表所在库名；留空则自动使用数据源当前库（推荐留空，避免落到默认的 agentscope 库）
+    database:
+    # 会话状态表名（启动时按需自动创建）
+    table: agentscope_sessions
+    # 是否在启动时自动建表
+    auto-create-table: true

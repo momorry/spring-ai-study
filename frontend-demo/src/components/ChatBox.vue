@@ -14,15 +14,15 @@
         :class="['message-item', message.role]"
       >
         <div class="message-avatar">
-          <el-avatar :size="40" :style="{ backgroundColor: message.role === 'user' ? '#409eff' : '#67c23a' }">
-            {{ message.role === 'user' ? '我' : 'AI' }}
+          <el-avatar :size="40" :style="{ backgroundColor: message.role === 'user' ? '#E85D04' : '#67c23a' }">
+            {{ message.role === 'user' ? '我' : '青梧' }}
           </el-avatar>
         </div>
         
         <div class="message-content">
           <div class="message-header">
             <span class="message-role">
-              {{ message.role === 'user' ? '我' : 'AI 助手' }}
+              {{ message.role === 'user' ? '我' : '青梧' }}
             </span>
             <span class="message-time">{{ formatTime(message.timestamp) }}</span>
           </div>
@@ -39,13 +39,24 @@
           <!-- 文本阶段 -->
           <div class="message-text" v-html="formatMessage(message.content)"></div>
           
+          <!-- 文件产物展示 -->
+          <div v-if="message.fileInfo" class="file-attachment">
+            <el-icon><Document /></el-icon>
+            <span class="file-name">{{ message.fileInfo.fileName }}</span>
+            <span class="file-size" v-if="message.fileInfo.fileSize">({{ formatFileSize(message.fileInfo.fileSize) }})</span>
+            <el-button type="primary" link @click="handleDownloadFile(message.fileInfo)">
+              <el-icon><Download /></el-icon>
+              下载
+            </el-button>
+          </div>
+          
           <!-- 消息操作按钮 -->
           <div class="message-actions" v-if="message.role === 'assistant'">
             <el-button size="small" text @click="handleCopy(getFullContent(message))">
               <el-icon><DocumentCopy /></el-icon>
               复制
             </el-button>
-            <el-button size="small" text @click="handleRegenerate(index)">
+            <el-button v-if="index > 0" size="small" text @click="handleRegenerate(index)">
               <el-icon><RefreshRight /></el-icon>
               重新生成
             </el-button>
@@ -56,7 +67,7 @@
       <!-- 加载指示器 -->
       <div v-if="loading" class="message-item assistant">
         <div class="message-avatar">
-          <el-avatar :size="40" style="background-color: #67c23a">AI</el-avatar>
+          <el-avatar :size="40" style="background-color: #67c23a">青梧</el-avatar>
         </div>
         <div class="message-content">
           <div class="typing-indicator">
@@ -82,15 +93,31 @@
       
       <div class="input-actions">
         <div class="left-actions">
-          <el-button :icon="Paperclip" circle :disabled="loading" />
-          <el-button :icon="Picture" circle :disabled="loading" />
+          <el-button
+            type="success"
+            plain
+            @click="handleNewConversation"
+            :disabled="loading"
+            title="新建会话"
+          >
+            <el-icon><Plus /></el-icon>
+            新建会话
+          </el-button>
         </div>
         
         <div class="right-actions">
           <el-button
+            v-if="loading"
+            type="danger"
+            :icon="VideoPause"
+            @click="handleStop"
+          >
+            停止生成
+          </el-button>
+          <el-button
+            v-else
             type="primary"
             :icon="Promotion"
-            :loading="loading"
             :disabled="!inputMessage.trim()"
             @click="handleSend"
           >
@@ -111,7 +138,11 @@ import {
   Promotion,
   DocumentCopy,
   RefreshRight,
-  ChatDotRound
+  ChatDotRound,
+  VideoPause,
+  Document,
+  Download,
+  Plus
 } from '@element-plus/icons-vue'
 
 const props = defineProps({
@@ -125,10 +156,34 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['send', 'copy', 'regenerate'])
+const emit = defineEmits(['send', 'copy', 'regenerate', 'stop', 'download-file', 'new-conversation'])
 
 const inputMessage = ref('')
 const messageListRef = ref(null)
+
+// 格式化文件大小
+const formatFileSize = (bytes) => {
+  if (!bytes || bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + units[i]
+}
+
+// 下载文件
+const handleDownloadFile = (fileInfo) => {
+  if (fileInfo.fileUrl) {
+    // 触发下载事件，由父组件处理具体逻辑
+    emit('download-file', fileInfo)
+    // 同时提供直接下载方式
+    const link = document.createElement('a')
+    link.href = fileInfo.fileUrl
+    link.download = fileInfo.fileName || 'download'
+    link.target = '_blank'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+}
 
 // 获取完整内容（包括推理过程）
 const getFullContent = (message) => {
@@ -147,15 +202,94 @@ const formatTime = (timestamp) => {
   return `${hours}:${minutes}`
 }
 
-// 格式化消息内容（支持简单的 Markdown）
+// 格式化消息内容（支持 Markdown 渲染）
 const formatMessage = (content) => {
   if (!content) return ''
-  
-  // 简单的换行处理
-  return content
-    .replace(/\n/g, '<br>')
-    .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+  let html = content
+  // 代码块（```...```）
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre class="md-code-block"><code class="language-$1">$2</code></pre>')
+  // 行内代码（`...`）
+  html = html.replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>')
+  // 标题（# ## ###）
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>')
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>')
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>')
+  // 粗体（**text**）
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  // 斜体（*text*）
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
+  // 无序列表（- item）
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>')
+  html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
+  // 有序列表（1. item）
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+  // 链接（[text](url)）
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+  // 分隔线（---）
+  html = html.replace(/^---$/gm, '<hr/>')
+  // 换行
+  html = html.replace(/\n/g, '<br>')
+  // Markdown 表格（必须在换行之后处理）
+  html = parseMarkdownTable(html)
+  return html
+}
+
+// 解析 Markdown 表格为 HTML（基于行的方式，更可靠）
+const parseMarkdownTable = (html) => {
+  const parts = html.split('<br>')
+  const result = []
+  let i = 0
+  while (i < parts.length) {
+    const line = parts[i].trim()
+    // 检测表格行：以 | 开头和结尾
+    if (/^\|.*\|$/.test(line) && i + 1 < parts.length && /^\|[\s\-:|]+\|$/.test(parts[i + 1].trim())) {
+      // 收集连续表格行
+      const tableLines = []
+      while (i < parts.length && /^\|.*\|$/.test(parts[i].trim())) {
+        tableLines.push(parts[i].trim())
+        i++
+      }
+      if (tableLines.length >= 2) {
+        // 解析对齐方式（第二行为分隔行）
+        const aligns = tableLines[1].split('|').filter(c => c.trim() !== '').map(c => {
+          c = c.trim()
+          if (c.startsWith(':') && c.endsWith(':')) return 'center'
+          if (c.endsWith(':')) return 'right'
+          return 'left'
+        })
+        // 表头
+        const headerCells = tableLines[0].split('|').filter(c => c.trim() !== '').map(c => c.trim())
+        let tableHtml = '<table class="md-table"><thead><tr>'
+        headerCells.forEach((cell, idx) => {
+          tableHtml += `<th style="text-align:${aligns[idx] || 'left'}">${cell}</th>`
+        })
+        tableHtml += '</tr></thead><tbody>'
+        // 数据行（跳过表头和分隔行）
+        for (let r = 2; r < tableLines.length; r++) {
+          const cells = tableLines[r].split('|').filter(c => c.trim() !== '').map(c => c.trim())
+          tableHtml += '<tr>'
+          cells.forEach((cell, idx) => {
+            tableHtml += `<td style="text-align:${aligns[idx] || 'left'}">${cell}</td>`
+          })
+          tableHtml += '</tr>'
+        }
+        tableHtml += '</tbody></table>'
+        result.push(tableHtml)
+      } else {
+        // 安全回退：将已收集的表格行作为普通文本输出
+        tableLines.forEach(l => result.push(l))
+      }
+    } else {
+      result.push(parts[i])
+      i++
+    }
+  }
+  return result.join('<br>')
+}
+
+// 新建会话
+const handleNewConversation = () => {
+  emit('new-conversation')
 }
 
 // 发送消息
@@ -181,6 +315,11 @@ const handleCopy = async (content) => {
   } catch (error) {
     ElMessage.error('复制失败')
   }
+}
+
+// 停止生成
+const handleStop = () => {
+  emit('stop')
 }
 
 // 重新生成
@@ -211,14 +350,16 @@ defineExpose({
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #fff;
+  background: #F9E9CD;
+  border-radius: 16px;
+  overflow: hidden;
 }
 
 .message-list {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
-  background: #f5f7fa;
+  background: #F9E9CD;
 }
 
 .empty-state {
@@ -245,13 +386,13 @@ defineExpose({
 .message-content {
   max-width: 70%;
   background: #fff;
-  padding: 12px 16px;
+  padding: 16px 20px;
   border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
 }
 
 .message-item.user .message-content {
-  background: #409eff;
+  background: linear-gradient(135deg, #F48C06, #E85D04);
   color: #fff;
 }
 
@@ -340,6 +481,144 @@ defineExpose({
   font-family: 'Courier New', monospace;
 }
 
+/* Markdown 渲染样式 */
+.message-text :deep(.md-code-block) {
+  background: #282c34;
+  color: #abb2bf;
+  padding: 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 10px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.message-text :deep(.md-code-block code) {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+.message-text :deep(.md-inline-code) {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Courier New', Consolas, monospace;
+  font-size: 0.9em;
+  color: #e83e8c;
+}
+
+.message-text :deep(h1),
+.message-text :deep(h2),
+.message-text :deep(h3) {
+  margin: 12px 0 8px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.message-text :deep(h1) { font-size: 1.4em; }
+.message-text :deep(h2) { font-size: 1.2em; }
+.message-text :deep(h3) { font-size: 1.1em; }
+
+.message-text :deep(ul) {
+  padding-left: 24px;
+  margin: 8px 0;
+}
+
+.message-text :deep(li) {
+  margin: 6px 0;
+  line-height: 1.7;
+}
+
+.message-text :deep(a) {
+  color: #E85D04;
+  text-decoration: none;
+}
+
+.message-text :deep(a:hover) {
+  text-decoration: underline;
+}
+
+.message-text :deep(hr) {
+  border: none;
+  border-top: 1px solid #e4e7ed;
+  margin: 12px 0;
+}
+
+.message-text :deep(strong) {
+  font-weight: 600;
+}
+
+.message-text :deep(em) {
+  font-style: italic;
+}
+
+/* Markdown 表格样式 */
+.message-text :deep(.md-table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 12px 0;
+  font-size: 14px;
+}
+
+.message-text :deep(.md-table th),
+.message-text :deep(.md-table td) {
+  border: 1px solid #e4e7ed;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.message-text :deep(.md-table th) {
+  background: #f5f7fa;
+  font-weight: 600;
+  color: #303133;
+}
+
+.message-text :deep(.md-table tr:nth-child(even)) {
+  background: #fafafa;
+}
+
+.message-text :deep(.md-table tr:hover) {
+  background: #f0f9ff;
+}
+
+/* 文件产物样式 */
+.file-attachment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.file-attachment .el-icon {
+  color: #0284c7;
+  font-size: 16px;
+}
+
+.file-attachment .file-name {
+  color: #0369a1;
+  font-weight: 500;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-attachment .file-size {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.file-attachment .el-button {
+  margin-left: auto;
+}
+
 .message-actions {
   margin-top: 8px;
   display: flex;
@@ -380,9 +659,24 @@ defineExpose({
 
 /* 输入区域 */
 .input-area {
-  border-top: 1px solid #e4e7ed;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
   padding: 16px 20px;
-  background: #fff;
+  background: #F9E9CD;
+}
+
+/* 输入框圆角 */
+.input-area :deep(.el-textarea__inner) {
+  border-radius: 16px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.input-area :deep(.el-textarea__inner:focus) {
+  border-color: #F5B199;
+}
+
+/* 按钮圆角 */
+.input-area :deep(.el-button) {
+  border-radius: 16px;
 }
 
 .input-actions {
@@ -396,6 +690,7 @@ defineExpose({
 .right-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 /* 滚动条样式 */
@@ -404,16 +699,16 @@ defineExpose({
 }
 
 .message-list::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .message-list::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
+  background: rgba(232, 93, 4, 0.3);
   border-radius: 3px;
 }
 
 .message-list::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
+  background: rgba(232, 93, 4, 0.5);
 }
 
 /* 响应式 */
