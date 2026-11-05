@@ -132,6 +132,7 @@
 <script setup>
 import { ref, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import MarkdownIt from 'markdown-it'
 import {
   Paperclip,
   Picture,
@@ -144,6 +145,14 @@ import {
   Download,
   Plus
 } from '@element-plus/icons-vue'
+
+// 初始化 markdown-it 实例
+const md = new MarkdownIt({
+  html: false,        // 不解析原始 HTML（安全）
+  breaks: true,       // 将 \n 转换为 <br>
+  linkify: true,      // 自动将 URL 转为链接
+  typographer: false
+})
 
 const props = defineProps({
   messages: {
@@ -202,89 +211,10 @@ const formatTime = (timestamp) => {
   return `${hours}:${minutes}`
 }
 
-// 格式化消息内容（支持 Markdown 渲染）
+// 格式化消息内容（使用 markdown-it 渲染）
 const formatMessage = (content) => {
   if (!content) return ''
-  let html = content
-  // 代码块（```...```）
-  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre class="md-code-block"><code class="language-$1">$2</code></pre>')
-  // 行内代码（`...`）
-  html = html.replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>')
-  // 标题（# ## ###）
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>')
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>')
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>')
-  // 粗体（**text**）
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  // 斜体（*text*）
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  // 无序列表（- item）
-  html = html.replace(/^- (.+)$/gm, '<li>$1</li>')
-  html = html.replace(/(<li>.*<\/li>)/s, '<ul>$1</ul>')
-  // 有序列表（1. item）
-  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-  // 链接（[text](url)）
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-  // 分隔线（---）
-  html = html.replace(/^---$/gm, '<hr/>')
-  // 换行
-  html = html.replace(/\n/g, '<br>')
-  // Markdown 表格（必须在换行之后处理）
-  html = parseMarkdownTable(html)
-  return html
-}
-
-// 解析 Markdown 表格为 HTML（基于行的方式，更可靠）
-const parseMarkdownTable = (html) => {
-  const parts = html.split('<br>')
-  const result = []
-  let i = 0
-  while (i < parts.length) {
-    const line = parts[i].trim()
-    // 检测表格行：以 | 开头和结尾
-    if (/^\|.*\|$/.test(line) && i + 1 < parts.length && /^\|[\s\-:|]+\|$/.test(parts[i + 1].trim())) {
-      // 收集连续表格行
-      const tableLines = []
-      while (i < parts.length && /^\|.*\|$/.test(parts[i].trim())) {
-        tableLines.push(parts[i].trim())
-        i++
-      }
-      if (tableLines.length >= 2) {
-        // 解析对齐方式（第二行为分隔行）
-        const aligns = tableLines[1].split('|').filter(c => c.trim() !== '').map(c => {
-          c = c.trim()
-          if (c.startsWith(':') && c.endsWith(':')) return 'center'
-          if (c.endsWith(':')) return 'right'
-          return 'left'
-        })
-        // 表头
-        const headerCells = tableLines[0].split('|').filter(c => c.trim() !== '').map(c => c.trim())
-        let tableHtml = '<table class="md-table"><thead><tr>'
-        headerCells.forEach((cell, idx) => {
-          tableHtml += `<th style="text-align:${aligns[idx] || 'left'}">${cell}</th>`
-        })
-        tableHtml += '</tr></thead><tbody>'
-        // 数据行（跳过表头和分隔行）
-        for (let r = 2; r < tableLines.length; r++) {
-          const cells = tableLines[r].split('|').filter(c => c.trim() !== '').map(c => c.trim())
-          tableHtml += '<tr>'
-          cells.forEach((cell, idx) => {
-            tableHtml += `<td style="text-align:${aligns[idx] || 'left'}">${cell}</td>`
-          })
-          tableHtml += '</tr>'
-        }
-        tableHtml += '</tbody></table>'
-        result.push(tableHtml)
-      } else {
-        // 安全回退：将已收集的表格行作为普通文本输出
-        tableLines.forEach(l => result.push(l))
-      }
-    } else {
-      result.push(parts[i])
-      i++
-    }
-  }
-  return result.join('<br>')
+  return md.render(content)
 }
 
 // 新建会话
@@ -466,23 +396,8 @@ defineExpose({
   word-wrap: break-word;
 }
 
+/* 代码块样式（markdown-it 输出 <pre><code>） */
 .message-text :deep(pre) {
-  background: rgba(0, 0, 0, 0.05);
-  padding: 12px;
-  border-radius: 4px;
-  overflow-x: auto;
-  margin: 8px 0;
-}
-
-.message-text :deep(code) {
-  background: rgba(0, 0, 0, 0.05);
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-family: 'Courier New', monospace;
-}
-
-/* Markdown 渲染样式 */
-.message-text :deep(.md-code-block) {
   background: #282c34;
   color: #abb2bf;
   padding: 16px;
@@ -493,14 +408,16 @@ defineExpose({
   line-height: 1.5;
 }
 
-.message-text :deep(.md-code-block code) {
+.message-text :deep(pre code) {
   background: transparent;
   padding: 0;
   color: inherit;
   font-size: inherit;
+  border-radius: 0;
 }
 
-.message-text :deep(.md-inline-code) {
+/* 行内代码样式 */
+.message-text :deep(:not(pre) > code) {
   background: rgba(0, 0, 0, 0.06);
   padding: 2px 6px;
   border-radius: 4px;
@@ -554,33 +471,48 @@ defineExpose({
   font-style: italic;
 }
 
-/* Markdown 表格样式 */
-.message-text :deep(.md-table) {
+/* Markdown 表格样式（markdown-it 输出标准 <table>） */
+.message-text :deep(table) {
   border-collapse: collapse;
   width: 100%;
   margin: 12px 0;
   font-size: 14px;
 }
 
-.message-text :deep(.md-table th),
-.message-text :deep(.md-table td) {
+.message-text :deep(table th),
+.message-text :deep(table td) {
   border: 1px solid #e4e7ed;
   padding: 8px 12px;
   text-align: left;
 }
 
-.message-text :deep(.md-table th) {
+.message-text :deep(table th) {
   background: #f5f7fa;
   font-weight: 600;
   color: #303133;
 }
 
-.message-text :deep(.md-table tr:nth-child(even)) {
+.message-text :deep(table tr:nth-child(even)) {
   background: #fafafa;
 }
 
-.message-text :deep(.md-table tr:hover) {
+.message-text :deep(table tr:hover) {
   background: #f0f9ff;
+}
+
+/* 引用块样式 */
+.message-text :deep(blockquote) {
+  margin: 10px 0;
+  padding: 8px 16px;
+  border-left: 4px solid #E85D04;
+  background: #fafafa;
+  color: #606266;
+}
+
+/* 有序列表样式 */
+.message-text :deep(ol) {
+  padding-left: 24px;
+  margin: 8px 0;
 }
 
 /* 文件产物样式 */
