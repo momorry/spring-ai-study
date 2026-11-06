@@ -56,8 +56,8 @@ export function sendChatMessageStream(endpoint, data, onEvent) {
     }),
     body: JSON.stringify({
       message: data.message,
-      sessionId: data.sessionId || '1',
-      userId: data.userId || '1'
+      sessionId: data.sessionId || '',
+      userId: data.userId || ''
     }),
     signal: controller.signal
   })
@@ -129,11 +129,11 @@ export function sendChatMessageStream(endpoint, data, onEvent) {
  */
 export function stopConversation(data) {
   return request({
-    url: '/reactagent/conversation/stop',
+    url: '/agent/conversation/stop',
     method: 'post',
     data: {
-      sessionId: data.sessionId || '1',
-      userId: data.userId || 1
+      sessionId: data.sessionId || '',
+      userId: data.userId || null
     }
   })
 }
@@ -153,8 +153,8 @@ export function sendChatMessage(endpoint, data) {
     method: 'post',
     data: {
       message: data.message,
-      sessionId: data.sessionId || '1',
-      userId: data.userId || '1'
+      sessionId: data.sessionId || '',
+      userId: data.userId || ''
     }
   })
 }
@@ -180,7 +180,7 @@ export function getChatHistory(endpoint, sessionId) {
  */
 export function loadConversationHistory(sessionId) {
   return request({
-    url: '/reactagent/conversation/history',
+    url: '/conversation/message/history',
     method: 'get',
     params: { sessionId }
   })
@@ -259,4 +259,33 @@ export function sendStreamChatMessage(endpoint, data, onMessage, onError) {
     })
   
   return () => controller.abort()
+}
+
+// ==================== 文件产物相关 API ====================
+
+/**
+ * 根据消息ID下载文件产物
+ * @param {string} messageId - 消息ID
+ * @returns {Promise<Blob>} 文件 Blob 数据
+ */
+export function downloadFileByMessageId(messageId) {
+  return request({
+    url: '/file/download',
+    method: 'get',
+    params: { messageId },
+    responseType: 'blob'  // 重要：指定响应类型为 blob
+  })
+}
+
+/**
+ * 根据消息ID获取文件信息
+ * @param {string} messageId - 消息ID
+ * @returns {Promise<Object>} 文件信息
+ */
+export function getFileInfoByMessageId(messageId) {
+  return request({
+    url: '/file/info',
+    method: 'get',
+    params: { messageId }
+  })
 }

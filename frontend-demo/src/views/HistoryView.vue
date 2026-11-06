@@ -36,6 +36,23 @@
         >
           <el-icon v-if="item.pinned" class="pin-icon"><TopRight /></el-icon>
           <span class="session-title">{{ item.title || '未命名会话' }}</span>
+          <div class="session-actions" @click.stop>
+            <el-dropdown trigger="click" @command="(cmd) => handleCommand(cmd, item)">
+              <el-icon class="action-icon"><MoreFilled /></el-icon>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="rename">
+                    <el-icon><Edit /></el-icon>
+                    <span>重命名</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>
+                    <el-icon><Delete /></el-icon>
+                    <span>删除</span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
         </div>
       </div>
 
@@ -63,14 +80,14 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Search, Loading, ArrowUp, TopRight } from '@element-plus/icons-vue'
-import { pageChatSessions } from '@/api/chatSession'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Search, Loading, ArrowUp, TopRight, MoreFilled, Edit, Delete } from '@element-plus/icons-vue'
+import { pageChatSessions, renameChatSession, deleteChatSession } from '@/api/chatSession'
 
 const props = defineProps({
   currentSessionId: {
     type: String,
-    default: '1'
+    default: null
   }
 })
 
@@ -217,6 +234,72 @@ function refreshPreserveSearch() {
 // 打开会话
 function openSession(item) {
   emit('select-session', item.sessionId)
+}
+
+// 操作菜单命令处理
+async function handleCommand(command, item) {
+  if (command === 'rename') {
+    await handleRename(item)
+  } else if (command === 'delete') {
+    await handleDelete(item)
+  }
+}
+
+// 重命名会话
+async function handleRename(item) {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新的会话标题', '重命名会话', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: item.title || '',
+      inputPattern: /\S+/,
+      inputErrorMessage: '标题不能为空'
+    })
+    
+    const newTitle = value.trim()
+    if (newTitle === (item.title || '')) return
+    
+    await renameChatSession(item.id, newTitle)
+    item.title = newTitle
+    ElMessage.success('重命名成功')
+  } catch (e) {
+    if (e !== 'cancel' && e?.toString() !== 'cancel') {
+      ElMessage.error('重命名失败')
+    }
+  }
+}
+
+// 删除会话
+async function handleDelete(item) {
+  try {
+    await ElMessageBox.confirm('确定要删除该会话吗？删除后无法恢复。', '删除确认', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    
+    await deleteChatSession(item.id)
+    ElMessage.success('删除成功')
+    
+    // 从列表中移除
+    const index = list.value.findIndex(s => s.id === item.id)
+    if (index !== -1) {
+      list.value.splice(index, 1)
+    }
+    const allIndex = allSessions.value.findIndex(s => s.id === item.id)
+    if (allIndex !== -1) {
+      allSessions.value.splice(allIndex, 1)
+    }
+    
+    // 如果删除的是当前选中的会话，清空当前会话ID
+    if (props.currentSessionId === item.sessionId) {
+      emit('select-session', null)
+    }
+  } catch (e) {
+    if (e !== 'cancel' && e?.toString() !== 'cancel') {
+      ElMessage.error('删除失败')
+    }
+  }
 }
 
 // 滚动到顶部
@@ -380,6 +463,37 @@ onUnmounted(() => {
 
 .session-item.active .pin-icon {
   color: #fff;
+}
+
+/* 会话操作按钮样式 */
+.session-actions {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.session-item:hover .session-actions {
+  opacity: 1;
+}
+
+.session-actions .action-icon {
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.session-actions .action-icon:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.session-item.active .session-actions .action-icon {
+  color: #fff;
+}
+
+.session-item.active .session-actions .action-icon:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .load-tip {

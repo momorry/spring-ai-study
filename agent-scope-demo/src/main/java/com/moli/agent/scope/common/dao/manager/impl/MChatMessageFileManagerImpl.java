@@ -26,41 +26,41 @@ public class MChatMessageFileManagerImpl extends ServiceImpl<MChatMessageFileMap
         implements MChatMessageFileManager {
 
     @Override
-    public Long saveFileRecord(Long userId, String sessionId, String replyId, String fileName,
+    public Long saveFileRecord(Long userId, String sessionId, String messageId, String fileName,
                                String fileUrl, Long fileSize, String fileType) {
         MChatMessageFile file = new MChatMessageFile();
         file.setUserId(userId);
         file.setSessionId(sessionId);
-        file.setReplyId(replyId);
+        file.setMessageId(messageId);
         file.setFileName(fileName);
         file.setFileUrl(fileUrl);
         file.setFileSize(fileSize);
         file.setFileType(fileType);
         save(file);
-        log.info("保存文件产物记录: userId={}, sessionId={}, replyId={}, fileName={}",
-                userId, sessionId, replyId, fileName);
+        log.info("保存文件产物记录: userId={}, sessionId={}, messageId={}, fileName={}",
+                userId, sessionId, messageId, fileName);
         return file.getId();
     }
 
     @Override
-    public MChatMessageFile getByReplyId(String replyId) {
-        if (replyId == null || replyId.isBlank()) {
+    public MChatMessageFile getByMessageId(String messageId) {
+        if (messageId == null || messageId.isBlank()) {
             return null;
         }
         return lambdaQuery()
-                .eq(MChatMessageFile::getReplyId, replyId)
+                .eq(MChatMessageFile::getMessageId, messageId)
                 .one();
     }
 
     @Override
-    public List<MChatMessageFile> listByReplyIds(List<String> replyIds) {
-        if (replyIds == null || replyIds.isEmpty()) {
+    public List<MChatMessageFile> listByMessageIds(List<String> messageIds) {
+        if (messageIds == null || messageIds.isEmpty()) {
             return Collections.emptyList();
         }
         // 去重
-        List<String> distinctReplyIds = replyIds.stream().distinct().collect(Collectors.toList());
+        List<String> distinctMessageIds = messageIds.stream().distinct().collect(Collectors.toList());
         return lambdaQuery()
-                .in(MChatMessageFile::getReplyId, distinctReplyIds)
+                .in(MChatMessageFile::getMessageId, distinctMessageIds)
                 .list();
     }
 

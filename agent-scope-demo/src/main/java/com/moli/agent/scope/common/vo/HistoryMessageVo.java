@@ -19,14 +19,14 @@ import java.util.Map;
 public class HistoryMessageVo {
 
     /**
+     * 消息ID（消息的唯一标识）
+     */
+    private String id;
+
+    /**
      * 消息角色：user / assistant / system / tool
      */
     private String role;
-
-    /**
-     * 回复ID（标识一次完整的模型回复）
-     */
-    private String replyId;
 
     /**
      * 消息文本内容（从 ContentBlock 中提取）

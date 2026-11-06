@@ -63,7 +63,7 @@
 
 **功能：**
 - ✅ 使用 ChatBox 组件
-- ✅ 调用 `/reactagent/conversation` 接口
+- ✅ 调用 `/agent/conversation` 接口
 - ✅ 消息发送和接收
 - ✅ 对话历史管理
 - ✅ 加载状态处理
@@ -74,7 +74,7 @@
 **API 集成：**
 ```javascript
 // 发送消息到后端
-POST /reactagent/conversation
+POST /agent/conversation
 {
   message: "用户消息",
   history: [...],
@@ -119,7 +119,6 @@ POST /harnessagent/conversation
 **新增路由：**
 ```javascript
 /chat/react-agent      → ReAct Agent 聊天页面
-/chat/harness-agent    → Harness Agent 聊天页面
 ```
 
 **路由守卫：**
@@ -281,7 +280,7 @@ handleSend(content) {
   loading = true
   
   // 4. 调用 API
-  const response = await sendChatMessage('/reactagent/conversation', {
+  const response = await sendChatMessage('/agent/conversation', {
     message: content,
     history: messages
   })
@@ -299,7 +298,7 @@ handleSend(content) {
 {
   path: '/chat/react-agent',
   name: 'react-agent-chat',
-  component: () => import('@/views/ReactAgentChat.vue'),
+  component: () => import('@/views/AgentChat.vue'),
   meta: { 
     title: 'ReAct Agent 对话',
     requiresLayout: true 
@@ -323,7 +322,6 @@ npm run dev
 
 - **首页**: http://localhost:3000/
 - **ReAct Agent**: http://localhost:3000/chat/react-agent
-- **Harness Agent**: http://localhost:3000/chat/harness-agent
 - **关于**: http://localhost:3000/about
 
 ### 3. 开始对话
@@ -347,7 +345,7 @@ npm run dev
 
 **请求：**
 ```http
-POST /reactagent/conversation
+POST /agent/conversation
 Content-Type: application/json
 
 {

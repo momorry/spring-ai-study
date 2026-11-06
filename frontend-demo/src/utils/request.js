@@ -44,6 +44,11 @@ service.interceptors.response.use(
     // 对响应数据做点什么
     const res = response.data
     
+    // Blob 类型响应（如文件下载），直接返回，不做 JSON 解析
+    if (res instanceof Blob) {
+      return res
+    }
+    
     // 假设后端返回的数据格式为 { code: 200, data: {}, message: '' }
     if (res.code === 200) {
       return res.data

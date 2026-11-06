@@ -34,14 +34,8 @@ const router = createRouter({
         {
           path: 'chat/react-agent',
           name: 'react-agent-chat',
-          component: () => import('@/views/ReactAgentChat.vue'),
+          component: () => import('@/views/AgentChat.vue'),
           meta: { title: 'ReAct Agent 对话', requiresLayout: true }
-        },
-        {
-          path: 'chat/harness-agent',
-          name: 'harness-agent-chat',
-          component: () => import('@/views/HarnessAgentChat.vue'),
-          meta: { title: 'Harness Agent 对话', requiresLayout: true }
         }
       ]
     },

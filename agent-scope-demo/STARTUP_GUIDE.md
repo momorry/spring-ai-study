@@ -88,7 +88,7 @@ server:
 
 **请求：**
 ```http
-POST /reactagent/conversation
+POST /agent/conversation
 Content-Type: application/json
 
 {
@@ -156,7 +156,7 @@ Started AgentScopeApplication in x.xxx seconds
 使用 curl 或 Postman 测试：
 
 ```bash
-curl -X POST http://localhost:8081/reactagent/conversation \
+curl -X POST http://localhost:8081/agent/conversation \
   -H "Content-Type: application/json" \
   -d '{"message": "你好", "history": []}'
 ```
@@ -227,7 +227,7 @@ mvn dependency:tree
 
 2. **测试接口**
    - 启动应用
-   - 使用 Postman 或 curl 测试 `/reactagent/conversation`
+   - 使用 Postman 或 curl 测试 `/agent/conversation`
 
 3. **查看代码**
    - `ChatController.java` - 控制器
@@ -279,6 +279,6 @@ mvn spring-boot:run -Dspring-boot.run.arguments="--logging.level.com.moli=DEBUG"
 
 **默认访问地址：** http://localhost:8081
 
-**API 端点：** `/reactagent/conversation`
+**API 端点：** `/agent/conversation`
 
 祝你开发愉快！🚀

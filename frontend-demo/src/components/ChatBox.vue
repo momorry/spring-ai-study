@@ -44,7 +44,7 @@
             <el-icon><Document /></el-icon>
             <span class="file-name">{{ message.fileInfo.fileName }}</span>
             <span class="file-size" v-if="message.fileInfo.fileSize">({{ formatFileSize(message.fileInfo.fileSize) }})</span>
-            <el-button type="primary" link @click="handleDownloadFile(message.fileInfo)">
+            <el-button type="primary" link @click="handleDownloadFile(message)">
               <el-icon><Download /></el-icon>
               下载
             </el-button>
@@ -179,19 +179,9 @@ const formatFileSize = (bytes) => {
 }
 
 // 下载文件
-const handleDownloadFile = (fileInfo) => {
-  if (fileInfo.fileUrl) {
-    // 触发下载事件，由父组件处理具体逻辑
-    emit('download-file', fileInfo)
-    // 同时提供直接下载方式
-    const link = document.createElement('a')
-    link.href = fileInfo.fileUrl
-    link.download = fileInfo.fileName || 'download'
-    link.target = '_blank'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
+const handleDownloadFile = (message) => {
+  // 触发下载事件，由父组件处理具体逻辑，传递完整的 message 对象
+  emit('download-file', message)
 }
 
 // 获取完整内容（包括推理过程）

@@ -132,7 +132,7 @@ const userStore = useUserStore()
 const activeMenu = ref('/chat/react-agent')
 const isSidebarCollapsed = ref(false)
 const isHistoryExpanded = ref(true)
-const currentSessionId = ref('1')
+const currentSessionId = ref(null)
 
 // 提供给子组件使用
 provide('currentSessionId', currentSessionId)
@@ -149,8 +149,7 @@ const sidebarWidth = computed(() => {
 // 页面标题映射
 const pageTitles = {
   '/home': '首页',
-  '/chat/react-agent': 'ReAct Agent',
-  '/chat/harness-agent': 'Harness Agent',
+  '/chat/agent': 'Agent',
   '/about': '关于'
 }
 

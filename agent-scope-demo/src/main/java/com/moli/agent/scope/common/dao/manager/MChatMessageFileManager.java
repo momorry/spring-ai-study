@@ -20,31 +20,31 @@ public interface MChatMessageFileManager extends IService<MChatMessageFile> {
      *
      * @param userId    用户ID
      * @param sessionId 会话ID
-     * @param replyId   回复ID
+     * @param messageId 消息ID
      * @param fileName  文件名称
      * @param fileUrl   文件访问地址
      * @param fileSize  文件大小（字节，可为 null）
      * @param fileType  文件类型 / MIME
      * @return 保存成功后的记录ID
      */
-    Long saveFileRecord(Long userId, String sessionId, String replyId, String fileName,
+    Long saveFileRecord(Long userId, String sessionId, String messageId, String fileName,
                         String fileUrl, Long fileSize, String fileType);
 
     /**
-     * 根据回复ID查询文件产物。
+     * 根据消息ID查询文件产物。
      *
-     * @param replyId 回复ID
+     * @param messageId 消息ID
      * @return 文件产物记录，不存在时返回 null
      */
-    MChatMessageFile getByReplyId(String replyId);
+    MChatMessageFile getByMessageId(String messageId);
 
     /**
-     * 批量根据回复ID列表查询文件产物。
+     * 批量根据消息ID列表查询文件产物。
      *
-     * @param replyIds 回复ID列表
-     * @return 文件产物列表（按 replyId 匹配）
+     * @param messageIds 消息ID列表
+     * @return 文件产物列表（按 messageId 匹配）
      */
-    List<MChatMessageFile> listByReplyIds(List<String> replyIds);
+    List<MChatMessageFile> listByMessageIds(List<String> messageIds);
 
     /**
      * 查询指定会话的所有文件产物（按创建时间升序）。

@@ -64,15 +64,15 @@ create index idx_cs_user on m_chat_session (user_id);
 
 -- ============================================================
 -- 消息文件产物关联表
--- 说明：记录每次对话产生的文件产物，关联到具体的回复（replyId）；
---      加载历史消息时，根据 replyId 查询并附加文件信息到对应的 assistant 消息。
+-- 说明：记录每次对话产生的文件产物，关联到具体的消息（messageId）；
+--      加载历史消息时，根据 messageId 查询并附加文件信息到对应的 assistant 消息。
 -- ============================================================
 create table m_chat_message_file
 (
     id           bigint primary key auto_increment comment '主键',
     user_id      bigint                   not null comment '所属用户ID（关联 m_user.id）',
     session_id   varchar(64)              not null comment 'AgentScope 会话ID',
-    reply_id     varchar(64)              not null comment '回复ID（关联一次具体的 AI 回复）',
+    message_id   varchar(64)              not null comment '消息ID（关联消息的 id 字段）',
     file_name    varchar(256)             not null comment '文件名称（含扩展名）',
     file_url     varchar(512)             not null comment '文件访问地址（相对路径或完整 URL）',
     file_size    bigint                   null comment '文件大小（字节）',
@@ -83,8 +83,8 @@ create table m_chat_message_file
     update_time  datetime                 null comment '更新时间'
 ) comment '消息文件产物关联表';
 
--- 按回复ID查文件（精确匹配）
-create unique index idx_mf_reply on m_chat_message_file (reply_id);
+-- 按消息ID查文件（精确匹配）
+create unique index idx_mf_message on m_chat_message_file (message_id);
 -- 按会话查文件
 create index idx_mf_session on m_chat_message_file (session_id);
 -- 按用户查文件

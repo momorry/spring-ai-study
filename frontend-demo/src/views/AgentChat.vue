@@ -9,6 +9,7 @@
       @regenerate="handleRegenerate"
       @stop="handleStop"
       @new-conversation="handleNewConversation"
+      @download-file="handleDownloadFile"
     />
   </div>
 </template>
@@ -18,18 +19,20 @@ import { ref, watch, inject } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ChatBox from '@/components/ChatBox.vue'
-import { sendChatMessageStream, stopConversation, loadConversationHistory } from '@/api/chat'
+import { sendChatMessageStream, stopConversation, loadConversationHistory, downloadFileByMessageId } from '@/api/chat'
+import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
+const userStore = useUserStore()
 const chatBoxRef = ref(null)
 const loading = ref(false)
 const abortFn = ref(null)
 
-// 从父组件注入当前会话ID
-const currentSessionId = inject('currentSessionId', ref('1'))
+// 从父组件注入当前会话ID（由后端流式响应生成，前端不主动生成）
+const currentSessionId = inject('currentSessionId', ref(null))
 
-// 会话 ID：优先从路由 query 获取，否则使用 inject 的值
-const sessionId = ref(route.query.sessionId || currentSessionId.value)
+// 会话 ID：初始为 null，由后端流式响应返回后赋值；从历史面板选择时也会被设置
+const sessionId = ref(null)
 
 // 消息列表（初始为欢迎消息，watcher 会从后端加载历史覆盖）
 const messages = ref([
@@ -41,11 +44,13 @@ const messages = ref([
   }
 ])
 
-// 监听路由 query 变化
+// 监听路由 query 变化（从历史面板选择会话时触发）
 watch(() => route.query.sessionId, (val) => {
   if (val) {
     sessionId.value = val
-    resetChat()
+    currentSessionId.value = val
+    lastLoadedSid = val
+    loadHistoryFromBackend(val)
   }
 })
 
@@ -53,13 +58,19 @@ watch(() => route.query.sessionId, (val) => {
 // 用 lastLoadedSid 追踪已加载的会话，避免与 sessionId 同步更新导致的竞态
 let lastLoadedSid = null
 watch(currentSessionId, (newId) => {
-  if (!newId) return
+  if (!newId) {
+    // 会话被删除或清空，重置为新建会话状态
+    sessionId.value = null
+    lastLoadedSid = null
+    resetChat()
+    return
+  }
   if (newId === lastLoadedSid) return  // 已加载过，跳过
   
   sessionId.value = newId
   lastLoadedSid = newId
   loadHistoryFromBackend(newId)
-}, { immediate: true })
+})
 
 // 从后端加载会话历史
 async function loadHistoryFromBackend(sid) {
@@ -69,6 +80,7 @@ async function loadHistoryFromBackend(sid) {
     if (Array.isArray(res) && res.length > 0) {
       // 将后端返回的历史消息转换为前端消息格式
       messages.value = res.map(msg => ({
+        id: msg.id || null,  // 消息ID
         role: msg.role,
         content: msg.content || '',
         thinking: msg.thinking || null,
@@ -81,13 +93,7 @@ async function loadHistoryFromBackend(sid) {
     }
   } catch (e) {
     console.error('加载历史消息失败:', e)
-    // 加载失败时尝试从 sessionStorage 加载
-    const cached = loadMessages()
-    if (cached && cached.length > 1) {
-      messages.value = cached
-    } else {
-      resetChat()
-    }
+    resetChat()
   }
 }
 
@@ -99,11 +105,10 @@ function handleNewConversation() {
     abortFn.value = null
   }
   loading.value = false
-  // 生成新的会话ID（UUID）
-  const newSessionId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)
-  sessionId.value = newSessionId
-  currentSessionId.value = newSessionId
-  lastLoadedSid = newSessionId  // 标记已加载，避免 watcher 重复请求
+  // 重置 sessionId，等待后端流式响应返回新的 sessionId
+  sessionId.value = null
+  currentSessionId.value = null
+  lastLoadedSid = null
   // 重置消息
   messages.value = [
     {
@@ -113,7 +118,6 @@ function handleNewConversation() {
       timestamp: Date.now()
     }
   ]
-  saveMessages()
   ElMessage.success('已新建会话')
 }
 
@@ -139,34 +143,7 @@ function resetChat() {
   }
 }
 
-// ---- sessionStorage 持久化 ----
-const STORAGE_KEY_PREFIX = 'chat_messages_'
-
-function storageKey(sid) {
-  return STORAGE_KEY_PREFIX + sid
-}
-
-function saveMessages() {
-  try {
-    sessionStorage.setItem(storageKey(sessionId.value), JSON.stringify(messages.value))
-  } catch (e) {
-    // sessionStorage 满了或不可用，忽略
-  }
-}
-
-function loadMessages() {
-  try {
-    const raw = sessionStorage.getItem(storageKey(sessionId.value))
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
-// 监听消息变化，自动缓存
-watch(messages, () => {
-  saveMessages()
-}, { deep: true })
+// 监听消息变化，自动滚动（移除 sessionStorage 缓存，统一使用后端数据）
 
 // 解析后端自定义 ChatStreamEvent（防腐层协议）
 const parseStreamEvent = (event) => {
@@ -233,10 +210,10 @@ const handleSend = async (content) => {
   let sessionIdCaptured = false
   
   try {
-    abortFn.value = sendChatMessageStream('/api/reactagent/conversation', {
+    abortFn.value = sendChatMessageStream('/api/agent/conversation', {
       message: content,
       sessionId: sessionId.value,
-      userId: '1'
+      userId: userStore.userInfo?.userId || ''
     }, (event, isDone) => {
       // 从第一个事件中捕获后端返回的 sessionId
       if (!sessionIdCaptured && event && event.sessionId) {
@@ -313,7 +290,7 @@ const handleStop = async () => {
     abortFn.value = null
   }
   try {
-    await stopConversation({ sessionId: sessionId.value, userId: 1 })
+    await stopConversation({ sessionId: sessionId.value, userId: userStore.userInfo?.userId || '' })
   } catch (e) {
     console.error('停止请求失败:', e)
   }
@@ -324,6 +301,39 @@ const handleStop = async () => {
 // 复制消息
 const handleCopy = (content) => {
   console.log('复制内容:', content)
+}
+
+// 下载文件
+const handleDownloadFile = async (message) => {
+  const fileInfo = message?.fileInfo
+  if (!fileInfo) {
+    ElMessage.error('没有可下载的文件')
+    return
+  }
+  
+  // 优先使用 fileInfo 中的 messageId，其次使用 message.id
+  const messageId = fileInfo.messageId || message?.id
+  if (!messageId) {
+    ElMessage.error('无法获取消息ID')
+    return
+  }
+  
+  try {
+    const blob = await downloadFileByMessageId(messageId)
+    // 创建临时下载链接
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileInfo?.fileName || 'download'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('下载成功')
+  } catch (error) {
+    console.error('下载失败:', error)
+    ElMessage.error('下载失败，请稍后重试')
+  }
 }
 
 // 重新生成
@@ -354,10 +364,10 @@ const handleRegenerate = async (index) => {
   let sessionIdCaptured2 = false
   
   try {
-    abortFn.value = sendChatMessageStream('/api/reactagent/conversation', {
+    abortFn.value = sendChatMessageStream('/api/agent/conversation', {
       message: userMessage.content,
       sessionId: sessionId.value,
-      userId: '1'
+      userId: userStore.userInfo?.userId || ''
     }, (event, isDone) => {
       // 从第一个事件中捕获后端返回的 sessionId
       if (!sessionIdCaptured2 && event && event.sessionId) {

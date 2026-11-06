@@ -22,8 +22,8 @@ export function pageChatSessions(params) {
 export function renameChatSession(id, title) {
   return request({
     url: '/mChatSession/rename',
-    method: 'post',
-    data: { id, title }
+    method: 'put',
+    params: { id, title }
   })
 }
 
@@ -33,8 +33,7 @@ export function renameChatSession(id, title) {
  */
 export function deleteChatSession(id) {
   return request({
-    url: '/mChatSession/delete',
-    method: 'post',
-    data: { id }
+    url: `/mChatSession/delete/${id}`,
+    method: 'delete'
   })
 }

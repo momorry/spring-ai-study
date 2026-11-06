@@ -26,4 +26,7 @@ public class FileInfo {
 
     /** 文件类型 / MIME，如 "text/plain"、"application/pdf" */
     private String fileType;
+
+    /** 关联的消息ID，用于下载文件产物 */
+    private String messageId;
 }

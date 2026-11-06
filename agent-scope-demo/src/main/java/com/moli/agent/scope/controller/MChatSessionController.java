@@ -6,12 +6,7 @@ import com.moli.agent.scope.common.dao.manager.MChatSessionManager;
 import com.moli.agent.scope.common.security.UserContext;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
@@ -58,24 +53,25 @@ public class MChatSessionController {
     /**
      * 重命名会话标题。仅允许操作本人会话。
      */
-    @PostMapping("/rename")
-    public ApiResult<Void> rename(@RequestBody MChatSession body) {
-        MChatSession owned = loadOwned(body.getId());
+    @PutMapping("/rename")
+    public ApiResult<Void> rename(@RequestParam("id") Long id,
+                                  @RequestParam("title") String title) {
+        MChatSession owned = loadOwned(id);
         if (owned == null) {
             return ApiResult.fail("会话不存在或无权操作");
         }
-        owned.setTitle(body.getTitle());
+        owned.setTitle(title);
         chatSessionManager.updateById(owned);
         return ApiResult.ok();
     }
 
     /**
      * 删除会话（逻辑删除）。仅允许操作本人会话。
-     * 注意：此处仅删除业务列表记录，AgentScope 的会话状态如需一并清理可另行调用状态存储的 delete。
+     *
      */
-    @PostMapping("/delete")
-    public ApiResult<Void> delete(@RequestBody MChatSession body) {
-        MChatSession owned = loadOwned(body.getId());
+    @DeleteMapping("/delete/{id}")
+    public ApiResult<Void> delete(@PathVariable Long id) {
+        MChatSession owned = loadOwned(id);
         if (owned == null) {
             return ApiResult.fail("会话不存在或无权操作");
         }

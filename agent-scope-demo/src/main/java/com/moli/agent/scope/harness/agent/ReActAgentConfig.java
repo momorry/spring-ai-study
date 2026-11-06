@@ -6,6 +6,7 @@ import com.moli.agent.scope.harness.model.ModelCreator;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.middleware.MiddlewareBase;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
+import io.agentscope.harness.agent.HarnessAgent;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.utils.Lists;
 import org.springframework.beans.factory.annotation.Value;
@@ -63,6 +64,20 @@ public class ReActAgentConfig {
                 .name("qing wu")
                 .middlewares(middlewareBases)
                 // 接入 MySQL 会话状态持久化：Agent 会按 RuntimeContext 的 userId/sessionId 自动读写状态
+                .stateStore(mysqlAgentStateStore)
+                .build();
+    }
+
+    @Bean
+    public HarnessAgent harnessAgent(ModelCreator modelCreator, MysqlAgentStateStore mysqlAgentStateStore,
+                                     MChatMessageFileManager messageFileManager) {
+        List<MiddlewareBase> middlewareBases = Lists.newArrayList();
+        middlewareBases.add(new FileGenMiddleware(messageFileManager));
+        return HarnessAgent.builder()
+                .model(modelCreator.streamModel())
+                .sysPrompt("你是一个学术渊博的智能机器人，可以回答用户的各种问题！你的名字叫青梧。")
+                .name("qing wu")
+                .middlewares(middlewareBases)
                 .stateStore(mysqlAgentStateStore)
                 .build();
     }

@@ -16,8 +16,8 @@ import java.time.LocalDateTime;
  * <p>
  * 消息文件产物关联表
  * </p>
- * 记录每次对话产生的文件产物，关联到具体的回复（replyId）；
- * 加载历史消息时，根据 replyId 查询并附加文件信息到对应的 assistant 消息。
+ * 记录每次对话产生的文件产物，关联到具体的消息（messageId）；
+ * 加载历史消息时，根据 messageId 查询并附加文件信息到对应的 assistant 消息。
  *
  * @author moli
  * @since 2026-11-05
@@ -47,9 +47,9 @@ public class MChatMessageFile implements Serializable {
     private String sessionId;
 
     /**
-     * 回复ID（关联一次具体的 AI 回复）
+     * 消息ID（关联消息的 id 字段）
      */
-    private String replyId;
+    private String messageId;
 
     /**
      * 文件名称（含扩展名）
