@@ -63,3 +63,5 @@ frontend-demo/dist/
 frontend-demo/.env
 frontend-demo/.env.local
 frontend-demo/.env.production
+
+output/
