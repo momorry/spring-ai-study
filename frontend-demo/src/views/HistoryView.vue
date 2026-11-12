@@ -403,7 +403,7 @@ onUnmounted(() => {
 }
 
 .search-btn:hover {
-  color: #E85D04;
+  color: #FAFAF5;
   background: rgba(0, 0, 0, 0.06);
 }
 
@@ -440,7 +440,7 @@ onUnmounted(() => {
 
 .session-item:hover {
   background: rgba(0, 0, 0, 0.06);
-  color: #E85D04;
+  color: #FAFAF5;
 }
 
 .session-item.active {
@@ -523,7 +523,7 @@ onUnmounted(() => {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #F48C06, #E85D04);
+  background: linear-gradient(135deg, #F48C06, #FAFAF5);
   color: #fff;
   display: flex;
   align-items: center;

@@ -4,7 +4,7 @@
     <el-aside :width="sidebarWidth" class="sidebar">
       <div class="logo">
         <el-icon :size="24"><Monitor /></el-icon>
-        <span v-if="!isSidebarCollapsed">AI Chat</span>
+        <span v-if="!isSidebarCollapsed">青梧小筑</span>
       </div>
       
       <el-menu
@@ -154,7 +154,7 @@ const pageTitles = {
 }
 
 const pageTitle = computed(() => {
-  return pageTitles[route.path] || 'AI Chat Demo'
+  return pageTitles[route.path] || '青梧小筑'
 })
 
 const isChatPage = computed(() => {
@@ -286,7 +286,7 @@ const handleMenuSelect = (index) => {
 
 .panel-toggle:hover {
   background: rgba(0, 0, 0, 0.06);
-  color: #E85D04;
+  color: #FAFAF5;
 }
 
 .panel-toggle .toggle-arrow {
@@ -360,8 +360,8 @@ const handleMenuSelect = (index) => {
 
 .bottom-menu-item:hover {
   background: rgba(0, 0, 0, 0.06) !important;
-  color: #E85D04 !important;
-  -webkit-text-fill-color: #E85D04 !important;
+  color: #FAFAF5 !important;
+  -webkit-text-fill-color: #FAFAF5 !important;
 }
 
 .bottom-menu-item.is-active {
@@ -463,7 +463,7 @@ const handleMenuSelect = (index) => {
 }
 
 .header-right :deep(.el-button:hover) {
-  color: #E85D04;
+  color: #FAFAF5;
 }
 
 .main-content {

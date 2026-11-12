@@ -4,22 +4,27 @@
       ref="chatBoxRef"
       :messages="messages"
       :loading="loading"
+      :models="models"
+      :current-model="currentModel"
+      :models-loading="modelsLoading"
       @send="handleSend"
       @copy="handleCopy"
       @regenerate="handleRegenerate"
       @stop="handleStop"
       @new-conversation="handleNewConversation"
       @download-file="handleDownloadFile"
+      @change-model="handleModelChange"
     />
   </div>
 </template>
 
 <script setup>
-import { ref, watch, inject } from 'vue'
+import { ref, watch, inject, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ChatBox from '@/components/ChatBox.vue'
 import { sendChatMessageStream, stopConversation, loadConversationHistory, downloadFileByMessageId } from '@/api/chat'
+import { listLlmModels } from '@/api/llmModel'
 import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
@@ -27,6 +32,47 @@ const userStore = useUserStore()
 const chatBoxRef = ref(null)
 const loading = ref(false)
 const abortFn = ref(null)
+
+// 模型切换：候选列表来自服务端配置表，选中项随对话请求下发
+const MODEL_STORAGE_KEY = 'chat-model-name'
+const models = ref([])
+const modelsLoading = ref(false)
+const currentModel = ref(localStorage.getItem(MODEL_STORAGE_KEY) || '')
+
+// 加载可选模型列表，并校准当前选中项（本地记忆失效时回退默认模型）
+async function loadModels() {
+  modelsLoading.value = true
+  try {
+    const res = await listLlmModels()
+    models.value = Array.isArray(res) ? res : []
+    const exists = models.value.some(m => m.modelName === currentModel.value)
+    if (!exists) {
+      const defaultModel = models.value.find(m => m.isDefault) || models.value[0]
+      currentModel.value = defaultModel ? defaultModel.modelName : ''
+      if (currentModel.value) {
+        localStorage.setItem(MODEL_STORAGE_KEY, currentModel.value)
+      }
+    }
+  } catch (e) {
+    // 配置表未初始化或接口异常：不阻断对话，服务端会按默认模型应答
+    console.error('加载模型列表失败:', e)
+    models.value = []
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+// 切换模型（下一条消息起生效）
+function handleModelChange(modelName) {
+  currentModel.value = modelName || ''
+  if (currentModel.value) {
+    localStorage.setItem(MODEL_STORAGE_KEY, currentModel.value)
+  } else {
+    localStorage.removeItem(MODEL_STORAGE_KEY)
+  }
+}
+
+onMounted(loadModels)
 
 // 从父组件注入当前会话ID（由后端流式响应生成，前端不主动生成）
 const currentSessionId = inject('currentSessionId', ref(null))
@@ -171,9 +217,9 @@ const parseStreamEvent = (event) => {
     return { type: 'file', fileInfo: event.fileInfo || null }
   }
   
-  // 对话完成
+  // 对话完成（携带本轮用户消息 ID，供后续按 ID 定位重新生成的回滚点）
   if (eventType === 'done') {
-    return { type: 'done' }
+    return { type: 'done', userMessageId: event.userMessageId || '' }
   }
   
   // 错误
@@ -182,6 +228,36 @@ const parseStreamEvent = (event) => {
   }
   
   return { type: 'other', thinking: null, text: null }
+}
+
+// 失败统一收口：复位 loading，并把原因写进当前助手气泡（toast 一闪而过，气泡里的文字才能让用户看清发生了什么）
+const handleStreamError = (index, message) => {
+  const target = messages.value[index]
+  if (target && !target.error) {
+    target.error = message
+    target.content = `${target.content ? target.content + '\n\n' : ''}⚠️ ${message}`
+  }
+  loading.value = false
+  ElMessage.error(message)
+  // AI 回答出错，通知刷新会话列表
+  window.dispatchEvent(new CustomEvent('refresh-session-list'))
+  if (chatBoxRef.value) {
+    chatBoxRef.value.scrollToBottom()
+  }
+}
+
+// 记下本轮用户消息 ID：服务端上下文里的这条用户消息就是这个 id，
+// 点重新生成时要原样带回，服务端据此精确定位回滚点（文本可能多条完全相同，不能靠文本找）
+const applyTurnUserMessageId = (index, userMessageId) => {
+  if (!userMessageId) return
+  const assistant = messages.value[index]
+  if (!assistant) return
+  assistant.userMessageId = userMessageId
+  // 重新生成会先删掉旧的那条再追加新的，所以本地 id 要跟着换成最新一个，不能只在缺失时补
+  const user = messages.value[index - 1]
+  if (user && user.role === 'user') {
+    user.id = userMessageId
+  }
 }
 
 // 发送消息
@@ -213,7 +289,8 @@ const handleSend = async (content) => {
     abortFn.value = sendChatMessageStream('/api/agent/conversation', {
       message: content,
       sessionId: sessionId.value,
-      userId: userStore.userInfo?.userId || ''
+      userId: userStore.userInfo?.userId || '',
+      modelName: currentModel.value
     }, (event, isDone) => {
       // 从第一个事件中捕获后端返回的 sessionId
       if (!sessionIdCaptured && event && event.sessionId) {
@@ -229,7 +306,7 @@ const handleSend = async (content) => {
       if (isDone) {
         loading.value = false
         if (chatBoxRef.value) {
-          chatBoxRef.value.scrollToBottom()
+          chatBoxRef.value.scrollToBottom({ force: false })
         }
         // AI 回答完成，通知刷新会话列表
         window.dispatchEvent(new CustomEvent('refresh-session-list'))
@@ -237,10 +314,8 @@ const handleSend = async (content) => {
       }
       
       if (event.error) {
-        ElMessage.error(`请求失败: ${event.error}`)
-        loading.value = false
-        // AI 回答出错，通知刷新会话列表
-        window.dispatchEvent(new CustomEvent('refresh-session-list'))
+        // fromServer：后端统一异常响应已给出可读原因，直接展示；网络层错误才加前缀
+        handleStreamError(aiMessageIndex, event.fromServer ? event.error : `请求失败: ${event.error}`)
         return
       }
       
@@ -266,14 +341,19 @@ const handleSend = async (content) => {
         messages.value[aiMessageIndex].fileInfo = parsed.fileInfo
         console.log('文件产物已生成:', parsed.fileInfo)
       } else if (parsed.type === 'error') {
-        ElMessage.error(`请求失败: ${parsed.message}`)
+        // 后端流内异常收敛成的 ERROR 事件（如模型额度用完），收到即结束本轮，不必再等连接关闭
+        handleStreamError(aiMessageIndex, parsed.message)
+        return
+      } else if (parsed.type === 'done') {
+        // 终止事件：即使 SSE 连接关闭有延迟，也先复位 loading
+        applyTurnUserMessageId(aiMessageIndex, parsed.userMessageId)
         loading.value = false
-        window.dispatchEvent(new CustomEvent('refresh-session-list'))
         return
       }
       
+      // 流式追加不强行拽回底部：用户往上翻看历史时，改由悬浮「回到底部」按钮手动恢复
       if (chatBoxRef.value) {
-        chatBoxRef.value.scrollToBottom()
+        chatBoxRef.value.scrollToBottom({ force: false })
       }
     })
   } catch (error) {
@@ -346,6 +426,25 @@ const handleRegenerate = async (index) => {
     return
   }
   
+  // 回滚点定位用的目标消息 ID：历史会话里用户消息自带 id，实时对话用 DONE 事件回传的那个
+  const regenerateMessageId = userMessage.id || messages.value[index]?.userMessageId || ''
+
+  // 同会话可能还有一轮正在生成：先中止本地流并通知服务端停下。
+  // 否则旧轮次会在服务端截断之后继续把消息刷回上下文，重复问题依旧
+  if (loading.value) {
+    if (abortFn.value) {
+      abortFn.value()
+      abortFn.value = null
+    }
+    try {
+      await stopConversation({ sessionId: sessionId.value, userId: userStore.userInfo?.userId || '' })
+    } catch (e) {
+      // 停下失败不阻断重新生成，后端截断遇到版本冲突会退化为直接覆盖写回
+      console.error('停止上一轮生成失败:', e)
+    }
+    loading.value = false
+  }
+  
   messages.value.splice(index, 1)
   
   const aiMessageIndex = messages.value.length
@@ -367,7 +466,12 @@ const handleRegenerate = async (index) => {
     abortFn.value = sendChatMessageStream('/api/agent/conversation', {
       message: userMessage.content,
       sessionId: sessionId.value,
-      userId: userStore.userInfo?.userId || ''
+      userId: userStore.userInfo?.userId || '',
+      modelName: currentModel.value,
+      // 告知服务端先把这一轮上下文回滚，再重放这条消息（否则会重复累积）
+      regenerate: true,
+      // 按消息 ID 精确定位回滚点；服务端定位不到会直接报错中止本次重新生成（不会退回去猜）
+      regenerateMessageId
     }, (event, isDone) => {
       // 从第一个事件中捕获后端返回的 sessionId
       if (!sessionIdCaptured2 && event && event.sessionId) {
@@ -382,18 +486,20 @@ const handleRegenerate = async (index) => {
       
       if (isDone) {
         loading.value = false
-        ElMessage.success('已重新生成回复')
+        // 出错时后端同样会以 ERROR 事件正常收尾，此处不能再报“重新生成成功”
+        if (!messages.value[aiMessageIndex]?.error) {
+          ElMessage.success('已重新生成回复')
+        }
         if (chatBoxRef.value) {
-          chatBoxRef.value.scrollToBottom()
+          chatBoxRef.value.scrollToBottom({ force: false })
         }
         window.dispatchEvent(new CustomEvent('refresh-session-list'))
         return
       }
       
       if (event.error) {
-        ElMessage.error(`请求失败: ${event.error}`)
-        loading.value = false
-        window.dispatchEvent(new CustomEvent('refresh-session-list'))
+        // fromServer：后端统一异常响应已给出可读原因，直接展示；网络层错误才加前缀
+        handleStreamError(aiMessageIndex, event.fromServer ? event.error : `请求失败: ${event.error}`)
         return
       }
       
@@ -419,14 +525,19 @@ const handleRegenerate = async (index) => {
         messages.value[aiMessageIndex].fileInfo = parsed.fileInfo
         console.log('文件产物已生成:', parsed.fileInfo)
       } else if (parsed.type === 'error') {
-        ElMessage.error(`请求失败: ${parsed.message}`)
+        // 后端流内异常收敛成的 ERROR 事件（如模型额度用完），收到即结束本轮，不必再等连接关闭
+        handleStreamError(aiMessageIndex, parsed.message)
+        return
+      } else if (parsed.type === 'done') {
+        // 终止事件：即使 SSE 连接关闭有延迟，也先复位 loading
+        applyTurnUserMessageId(aiMessageIndex, parsed.userMessageId)
         loading.value = false
-        window.dispatchEvent(new CustomEvent('refresh-session-list'))
         return
       }
       
+      // 同上：重新生成的流式输出也不打断用户往上翻看历史
       if (chatBoxRef.value) {
-        chatBoxRef.value.scrollToBottom()
+        chatBoxRef.value.scrollToBottom({ force: false })
       }
     })
   } catch (error) {

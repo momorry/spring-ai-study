@@ -99,8 +99,55 @@ Content-Type: application/json
 
 **响应：**
 ```
-Flux<AgentEvent> - 流式响应
+Flux<ChatStreamEvent> - 流式响应（SSE）
 ```
+
+请求体可选字段 `modelName`：本次对话要使用的模型标识（来自 `/llm/models`）。为空时服务端使用 `application-local.yml` 的 `llm.model`。
+
+```http
+POST /agent/conversation
+Content-Type: application/json
+
+{
+  "message": "你好",
+  "sessionId": "...",
+  "modelName": "external-deepseek-v4-flash"
+}
+```
+
+### 2. 可选模型列表接口
+
+供前端聊天框的模型下拉框渲染，只返回展示字段（不下发 baseUrl / apiKey）：
+
+```http
+GET /llm/models
+```
+
+```json
+{
+  "success": true,
+  "code": 200,
+  "data": [
+    {
+      "modelName": "external-deepseek-v4-flash",
+      "displayName": "DeepSeek V4 Flash",
+      "vendorCode": "internal-gateway",
+      "vendorName": "内部网关",
+      "isDefault": true
+    }
+  ]
+}
+```
+
+### 3. 模型动态切换（m_llm_model_config）
+
+模型清单存放在 `m_llm_model_config` 表（建表与初始数据见 `doc/init/initData.sql`），一行 = 一个可选模型，
+同一厂商（`vendor_code`）可配置多行；关键列：`vendor_name`、`model_name`、`display_name`、`base_url`、`api_key`、
+`endpoint_path`、`formatter`（openai/deepseek/kimi/glm/minimax）、`is_default`、`enabled`、`sort_no`。
+
+实现要点：Agent 是单例且其 `model` 字段不可变，因此不改 Agent，而是在 `DynamicModelMiddleware.onModelCall`
+（SDK 的原始模型调用拦截点）按 `RuntimeContext` 里携带的模型名替换本次调用的模型实例；模型实例由
+`ModelCreator` 依据配置构建并做 60 秒 TTL 缓存。配置表缺失、模型名不存在或构建异常时统一回退默认模型，不中断对话。
 
 ---
 

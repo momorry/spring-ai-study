@@ -37,11 +37,13 @@ public interface MChatSessionManager extends IService<MChatSession> {
 
     /**
      * 用户发起一次对话时更新会话元数据：
-     * 会话不存在则新建（标题取首条用户消息截断），存在则刷新最后消息预览、累加对话轮数。
+     * 会话不存在则新建（标题取首条用户消息截断），存在则刷新最后消息预览；
+     * 只有新一轮对话才累加轮数，重新生成属于同一轮重放，不能重复累加。
      *
      * @param userId      用户ID
      * @param sessionId   AgentScope 会话ID
      * @param userMessage 本次用户消息
+     * @param regenerate  是否为重新生成（重放上一条用户消息）
      */
-    String touchOnUserMessage(Long userId, String sessionId, String userMessage);
+    String touchOnUserMessage(Long userId, String sessionId, String userMessage, boolean regenerate);
 }

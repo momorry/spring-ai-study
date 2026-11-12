@@ -46,4 +46,11 @@ public class ChatStreamEvent {
 
     /** 错误信息（error 阶段） */
     private String errorMessage;
+
+    /**
+     * 本轮用户消息 ID（done 阶段携带）。
+     * <p>前端需记下并归到这条回答上，点“重新生成”时作为 regenerateMessageId 回传，
+     * 服务端据此精确定位上下文回滚点（实时会话里前端拿不到这个 id，只能靠这里下发）。
+     */
+    private String userMessageId;
 }

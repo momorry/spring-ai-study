@@ -51,7 +51,7 @@ public class MChatSessionManagerImpl extends ServiceImpl<MChatSessionMapper, MCh
     }
 
     @Override
-    public String touchOnUserMessage(Long userId, String sessionId, String userMessage) {
+    public String touchOnUserMessage(Long userId, String sessionId, String userMessage, boolean regenerate) {
         if (userId == null) {
             return null;
         }
@@ -75,7 +75,10 @@ public class MChatSessionManagerImpl extends ServiceImpl<MChatSessionMapper, MCh
             log.info("新建历史会话记录: userId={}, sessionId={}", userId, sessionId);
         } else {
             existing.setLastMessage(truncate(userMessage, LAST_MESSAGE_MAX_LEN, existing.getLastMessage()));
-            existing.setRoundCount((existing.getRoundCount() == null ? 0 : existing.getRoundCount()) + 1);
+            // 重新生成只是把同一轮重放（上下文也会先回滚），不新增轮次，轮数不能再 +1
+            if (!regenerate) {
+                existing.setRoundCount((existing.getRoundCount() == null ? 0 : existing.getRoundCount()) + 1);
+            }
             updateById(existing);
         }
         return sessionId;

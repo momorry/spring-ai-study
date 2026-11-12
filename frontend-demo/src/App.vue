@@ -29,7 +29,7 @@ body {
 
 /* Element Plus 秋天主题色覆盖 */
 :root {
-  --el-color-primary: #E85D04;
+  --el-color-primary: #FAFAF5;
   --el-color-primary-light-1: #F48C06;
   --el-color-primary-light-2: #FAA307;
   --el-color-primary-light-3: #FFBA08;

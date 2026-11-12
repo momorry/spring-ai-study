@@ -1,15 +1,6 @@
 import axios from 'axios'
-import router from '@/router'
-
-// 401 统一处理：清理登录态并跳转登录页
-const handleUnauthorized = () => {
-  localStorage.removeItem('token')
-  localStorage.removeItem('userInfo')
-  const current = router.currentRoute.value
-  if (current.name !== 'login') {
-    router.replace({ name: 'login', query: { redirect: current.fullPath } })
-  }
-}
+// 401 统一处理集中在 session.js，与非 axios 的原生 fetch 通道（SSE 流式对话）共用同一套逻辑
+import { handleUnauthorized } from '@/utils/session'
 
 // 创建 axios 实例
 const service = axios.create({
@@ -63,9 +54,16 @@ service.interceptors.response.use(
     }
   },
   (error) => {
+    const status = error.response?.status
     // HTTP 401 也需跳转登录
-    if (error.response && error.response.status === 401) {
+    if (status === 401) {
       handleUnauthorized()
+    }
+    // 非 2xx（如全局异常处理器回传的 500）里，axios 只给“Request failed with status code 500”这种生硬描述，
+    // 把后端 ApiResult.message 提到 error.message 上，调用方 catch 里直接展 e.message 就能看到原因
+    const serverMessage = error.response?.data?.message
+    if (serverMessage) {
+      error.message = serverMessage
     }
     // 对响应错误做点什么
     console.error('响应错误：', error)

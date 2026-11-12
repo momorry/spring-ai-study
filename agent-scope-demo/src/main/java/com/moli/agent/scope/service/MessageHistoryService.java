@@ -54,9 +54,9 @@ public class MessageHistoryService {
         List<Integer> assistantIndices = new ArrayList<>();
 
         try {
-            // 从 AgentStateStore 加载 AgentState
+            // 从 AgentStateStore 加载 AgentState（stateKey 与写侧 ConversationContextService 共用同一常量）
             Optional<AgentState> stateOpt = agentStateStore.get(
-                    userId, sessionId, "agent_state", AgentState.class);
+                    userId, sessionId, ConversationContextService.STATE_KEY_AGENT, AgentState.class);
 
             if (stateOpt.isEmpty()) {
                 log.info("未找到会话历史: userId={}, sessionId={}", userId, sessionId);

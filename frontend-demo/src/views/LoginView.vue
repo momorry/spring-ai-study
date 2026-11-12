@@ -2,8 +2,8 @@
   <div class="login-container">
     <div class="login-box">
       <div class="login-header">
-        <el-icon :size="36" color="#E85D04"><Monitor /></el-icon>
-        <h2 class="login-title">AI Chat Demo</h2>
+        <el-icon :size="36" color="#FAFAF5"><Monitor /></el-icon>
+        <h2 class="login-title">青梧小筑</h2>
         <p class="login-subtitle">请登录以继续</p>
       </div>
 
@@ -106,7 +106,7 @@ const handleLogin = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #2C1810 0%, #3E2723 30%, #E85D04 70%, #F48C06 100%);
+  background: linear-gradient(135deg, #2C1810 0%, #3E2723 30%, #FAFAF5 70%, #F48C06 100%);
 }
 
 .login-box {

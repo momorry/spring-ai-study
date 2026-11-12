@@ -1,7 +1,9 @@
 package com.moli.agent.scope.harness.agent;
 
 import com.moli.agent.scope.common.dao.manager.MChatMessageFileManager;
+import com.moli.agent.scope.harness.middleware.DynamicModelMiddleware;
 import com.moli.agent.scope.harness.middleware.FileGenMiddleware;
+import com.moli.agent.scope.harness.middleware.StopOnAllDeniedMiddleware;
 import com.moli.agent.scope.harness.model.ModelCreator;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.middleware.MiddlewareBase;
@@ -58,6 +60,8 @@ public class ReActAgentConfig {
                                   MChatMessageFileManager messageFileManager) {
         List<MiddlewareBase> middlewareBases = Lists.newArrayList();
         middlewareBases.add(new FileGenMiddleware(messageFileManager));
+        // 动态模型：装配期用 llm.* 默认模型，运行期按请求选定的模型替换
+        middlewareBases.add(new DynamicModelMiddleware(modelCreator));
         return ReActAgent.builder()
                 .model(modelCreator.streamModel())
                 .sysPrompt("你是一个聪明可爱的智能机器人，可以回答用户的各种问题！你的名字叫青梧。")
@@ -73,6 +77,9 @@ public class ReActAgentConfig {
                                      MChatMessageFileManager messageFileManager) {
         List<MiddlewareBase> middlewareBases = Lists.newArrayList();
         middlewareBases.add(new FileGenMiddleware(messageFileManager));
+        middlewareBases.add(new StopOnAllDeniedMiddleware());
+        // 动态模型：使前端切换的模型名在本次调用的每次模型请求中生效
+        middlewareBases.add(new DynamicModelMiddleware(modelCreator));
         return HarnessAgent.builder()
                 .model(modelCreator.streamModel())
                 .sysPrompt("你是一个学术渊博的智能机器人，可以回答用户的各种问题！你的名字叫青梧。")

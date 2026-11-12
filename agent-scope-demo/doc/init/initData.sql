@@ -91,3 +91,56 @@ create index idx_mf_session on m_chat_message_file (session_id);
 create index idx_mf_user on m_chat_message_file (user_id);
 
 
+-- ============================================================
+-- 模型厂商配置表（可动态切换的大模型清单）
+-- 说明：一行 = 一个「前端可选、服务端可动态构建」的模型；同一厂商（vendor_code）可提供多行模型，
+--      厂商级信息（base_url / api_key / formatter）按行冗余存储，同一厂商改配置时按 vendor_code 批量 UPDATE 即可。
+--      Agent 本身仍是单例（模型是 final 字段不可换），运行期由 DynamicModelMiddleware 依据请求携带的
+--      modelName 换取本表配置，路由到对应的 OpenAI 兼容模型实例；查不到或字段为空则回退 application-local.yml 的 llm.*。
+--      api_key 为敏感信息：对外接口只返回展示字段，不下发该列。
+-- ============================================================
+create table m_llm_model_config
+(
+    id            bigint primary key auto_increment comment '主键',
+    vendor_code   varchar(64)            not null comment '供应商编码：internal-gateway/deepseek/dashscope/kimi/zhipu 等',
+    vendor_name   varchar(64)            not null comment '供应商展示名称：如 内部网关、阿里云百炼',
+    model_name    varchar(128)           not null comment '模型标识：调用接口时传入的 model 值',
+    display_name  varchar(128)           not null comment '模型展示名称：前端下拉框显示文案',
+    base_url      varchar(256)           not null comment 'OpenAI 兼容接口地址（不含 /chat/completions）',
+    api_key       varchar(256)           not null comment '访问密钥',
+    endpoint_path varchar(128)           null comment '自定义接口路径（可选，默认 /chat/completions）',
+    formatter     varchar(32) default 'openai' not null comment '消息格式化器：openai/deepseek/kimi/glm/minimax',
+    is_default    tinyint(1)  default 0  not null comment '是否默认模型 1-是 0-否（全局至多一行为 1）',
+    enabled       tinyint(1)  default 1  not null comment '是否启用 1-启用 0-停用（停用不出现在下拉列表）',
+    sort_no       int         default 0  not null comment '排序号（大者靠前）',
+    remark        varchar(256)           null comment '备注',
+    deleted       tinyint(1)  default 0  not null comment '逻辑删除 1-已删除 0-未删除',
+    create_by     varchar(32)            null comment '创建人',
+    create_time   datetime               null comment '创建时间',
+    update_by     varchar(32)            null comment '更新人',
+    update_time   datetime               null comment '更新时间'
+) comment '模型厂商配置表（可动态切换的大模型清单）';
+
+-- 模型标识全局唯一（动态路由依据）
+create unique index uq_lmc_model_name on m_llm_model_config (model_name);
+-- 按厂商查模型
+create index idx_lmc_vendor on m_llm_model_config (vendor_code);
+
+-- 初始数据：与 application-local.yml 中 llm.* 保持一致的默认模型（formatter 沿用 openai，行为与改造前完全相同）
+insert into m_llm_model_config (vendor_code, vendor_name, model_name, display_name, base_url, api_key,
+                                formatter, is_default, enabled, sort_no, remark, create_by, create_time)
+values ('internal-gateway', '内部网关', 'external-deepseek-v4-flash', 'DeepSeek V4 Flash',
+        '1', '1',
+        'openai', 1, 1, 100, '默认模型', 'system', now());
+
+-- 公共厂商示例（需先补齐 api_key 再把 enabled 改为 1，否则下拉列表会出现不可用模型）
+-- insert into m_llm_model_config (vendor_code, vendor_name, model_name, display_name, base_url, api_key, formatter, is_default, enabled, sort_no, create_by, create_time)
+-- values ('dashscope', '阿里云百炼', 'qwen-plus', '通义千问 Plus', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'sk-请替换', 'openai', 0, 0, 90, 'system', now());
+-- insert into m_llm_model_config (vendor_code, vendor_name, model_name, display_name, base_url, api_key, formatter, is_default, enabled, sort_no, create_by, create_time)
+-- values ('deepseek', 'DeepSeek 官方', 'deepseek-chat', 'DeepSeek Chat', 'https://api.deepseek.com/v1', 'sk-请替换', 'deepseek', 0, 0, 80, 'system', now());
+-- insert into m_llm_model_config (vendor_code, vendor_name, model_name, display_name, base_url, api_key, formatter, is_default, enabled, sort_no, create_by, create_time)
+-- values ('kimi', '月之暗面', 'moonshot-v1-128k', 'Kimi 128K', 'https://api.moonshot.cn/v1', 'sk-请替换', 'kimi', 0, 0, 70, 'system', now());
+-- insert into m_llm_model_config (vendor_code, vendor_name, model_name, display_name, base_url, api_key, formatter, is_default, enabled, sort_no, create_by, create_time)
+-- values ('zhipu', '智谱清言', 'glm-4-plus', 'GLM-4 Plus', 'https://open.bigmodel.cn/api/paas/v4', '请替换', 'glm', 0, 0, 60, 'system', now());
+
+

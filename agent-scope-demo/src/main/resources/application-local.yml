@@ -1,4 +1,29 @@
+spring:
+  datasource:
+    type: com.zaxxer.hikari.HikariDataSource
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://10.129.67.77:4000/iresearch_aid?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&allowMultiQueries=true&useCursorFetch=true&rewriteBatchedStatements=true
+    username: iresearch_aid
+    password: iresearch_aid@2024
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+    serialization:
+      FAIL_ON_EMPTY_BEANS: false #解决mybatis 级联查询懒加载对象无法序列化问题
+    generator:
+      WRITE_BIGDECIMAL_AS_PLAIN: true #不使用科学计数法
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.moli.agent.scope.common.dao.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+
 llm:
   base-url: 1
   api-key: 1
-  model: 1
+  model: external-deepseek-v4-flash

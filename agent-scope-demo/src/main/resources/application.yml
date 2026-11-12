@@ -16,6 +16,13 @@ jwt:
   # token 前缀
   prefix: "Bearer "
 
+# 流式对话（SSE）相关配置
+agent:
+  stream:
+    # 事件空闲超时（秒）：超过该时长模型/工具没有任何事件产出时主动断流并下发 ERROR 事件，
+    # 避免前端连接一直挂着、界面卡在 loading。若常用工具执行耗时较长，可调大此值
+    idle-timeout-seconds: 300
+
 # AgentScope 会话状态 MySQL 持久化（agentscope-extensions-mysql）
 agentscope:
   state-store:

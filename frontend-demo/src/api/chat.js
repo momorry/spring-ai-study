@@ -1,4 +1,6 @@
 import request from '@/utils/request'
+// 本文件的流式对话用原生 fetch，不经过 axios 响应拦截器，401 需在此通道的每个非 2xx 分支里显式处理
+import { handleUnauthorized } from '@/utils/session'
 
 // 构造带 JWT token 的请求头（原生 fetch 不走 axios 拦截器）
 function authHeaders(extra = {}) {
@@ -10,12 +12,40 @@ function authHeaders(extra = {}) {
 }
 
 /**
+ * 解析非 2xx 响应体，拿到业务码与可读错误原因。
+ * <p>后端 GlobalExceptionHandler / LoginInterceptor 统一返回 ApiResult{success, code, message}，
+ * 优先取它的 code 与 message；取不到（网关的 HTML 错误页、纯文本等）则退回状态码提示，
+ * 避免把整段 HTML 塞进气泡。code 用于识别 401（网关有时会只透传 body 而丢掉状态码）。
+ * @returns {{ code: number, message: string }}
+ */
+function parseErrorPayload(text, status) {
+  const raw = (text || '').trim()
+  if (!raw) return { code: status, message: `服务异常（HTTP ${status}）` }
+  if (raw.startsWith('<')) return { code: status, message: `服务异常（HTTP ${status}），请查看服务端日志` }
+  try {
+    const body = JSON.parse(raw)
+    if (body && typeof body === 'object') {
+      const message = typeof body.message === 'string' && body.message.trim()
+        ? body.message
+        : `服务异常（HTTP ${status}）`
+      return { code: Number(body.code) || status, message }
+    }
+  } catch (e) {
+    // 不是 JSON，原文截断展示
+  }
+  return { code: status, message: raw.slice(0, 200) }
+}
+
+/**
  * 发送聊天消息（流式）
  * @param {string} endpoint - API 端点路径
  * @param {Object} data - 请求数据
  * @param {string} data.message - 用户消息
  * @param {string} data.sessionId - 会话 ID
  * @param {string} data.userId - 用户 ID
+ * @param {string} [data.modelName] - 本次对话使用的模型标识（下拉选择值）；为空则由服务端使用默认模型
+ * @param {boolean} [data.regenerate] - 是否为重新生成：服务端会先把该轮上下文回滚再重放本条消息
+ * @param {string} [data.regenerateMessageId] - 要重放的那条用户消息 ID，服务端按它精确定位回滚点
  * @param {Function} onEvent - 事件回调函数
  * @returns {Function} 取消函数
  */
@@ -57,11 +87,32 @@ export function sendChatMessageStream(endpoint, data, onEvent) {
     body: JSON.stringify({
       message: data.message,
       sessionId: data.sessionId || '',
-      userId: data.userId || ''
+      userId: data.userId || '',
+      // 服务端按此标识动态切换本次对话调用的模型（见 DynamicModelMiddleware）
+      modelName: data.modelName || '',
+      // 重新生成标志：服务端据此回滚上下文，避免同一条消息在上下文里重复累积
+      regenerate: !!data.regenerate,
+      // 定位回滚点的目标消息 ID（历史消息自带、实时对话由 DONE 事件回传）
+      regenerateMessageId: data.regenerateMessageId || ''
     }),
     signal: controller.signal
   })
     .then(async response => {
+      // 非 2xx：SSE 尚未建立（未登录、网关异常、参数报错、重新生成定位失败等），响应体不是事件流。
+      // 必须显式报错收口，否则前端只会读到一个“空流”，界面没有任何反馈
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '')
+        const { code, message } = parseErrorPayload(detail, response.status)
+        // 401 单独处理：不跳转就会停在对话页，且因为 token 已被清空，后续每次重试都只会回
+        // “未登录：请求头中缺少 JWT TOKEN”，看起来像“报错不跳登录页”的死循环
+        if (response.status === 401 || code === 401) {
+          handleUnauthorized()
+        }
+        // fromServer: 原因已由后端统一给出，前端直接展示，不再叠加“请求失败”前缀
+        onEvent({ error: message, fromServer: true }, false)
+        return
+      }
+
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
@@ -111,6 +162,8 @@ export function sendChatMessageStream(endpoint, data, onEvent) {
       }
     })
     .catch(error => {
+      // AbortError 是用户主动停止，不需报错；其余（网络中断、流读取异常等）
+      // 都必须回调，不然 loading 永远停不下来
       if (error.name !== 'AbortError') {
         console.error('流式请求错误:', error)
         onEvent({ error: error.message }, false)
