@@ -82,7 +82,7 @@ const EFFECTS = [
   { name: 'wipe', weight: 1 }
 ]
 
-const wallpaperModules = import.meta.glob('/src/images/*.{jpg,jpeg,png,webp}', {
+const wallpaperModules = import.meta.glob('/src/assets/images/home/*.{jpg,jpeg,png,webp}', {
   eager: true,
   query: '?url',
   import: 'default'

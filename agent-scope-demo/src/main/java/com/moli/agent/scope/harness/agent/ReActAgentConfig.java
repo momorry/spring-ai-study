@@ -13,8 +13,11 @@ import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.permission.PermissionRule;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.core.tool.mcp.McpClientBuilder;
+import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.modelcontextprotocol.spec.McpSchema;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.utils.Lists;
 import org.springframework.beans.factory.annotation.Value;
@@ -87,21 +90,37 @@ public class ReActAgentConfig {
         // 动态模型：使前端切换的模型名在本次调用的每次模型请求中生效
         middlewareBases.add(new DynamicModelMiddleware(modelCreator));
 
-        // 人在回路门禁：这两个工具每次被调用都暂停等用户确认。
+        // 人在回路门禁：这些工具每次被调用都暂停等用户确认。
         // 两个要点（均按 agentscope-core 2.0.4 源码核实）：
         // 一、必须至少往 context 里放一条规则，否则 PermissionContextState.isTrivial() 为 true，
         //     ReActAgent 走「只调工具自检」的轻量分支，注解工具的自检恒为 PASSTHROUGH，等于完全放行；
         // 二、注解式工具的 matchRule 未被覆写（ToolBase 默认只有 ruleContent==null 才算命中），
         //     所以这里不能写带内容的规则（如命令前缀、路径前缀），只能整工具级一律 ASK。
-        PermissionContextState permCtx =
+        PermissionContextState.Builder permCtxBuilder =
                 PermissionContextState.builder()
                         .mode(PermissionMode.DEFAULT)
                         .addAllowRule(WeatherTool.TOOL_NAME, allowCall(WeatherTool.TOOL_NAME))
                         .addAllowRule("web_search", allowCall("web_search"))
-                        .addAllowRule("web_fetch", allowCall("web_search"))
-                        .build();
+                        .addAllowRule("web_fetch", allowCall("web_fetch"));
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(new WeatherTool());
+        //MCP：header 用链式 .header() 追加，不要 Map.of() 再 put——Map.of() 返回不可变集合会抛 UnsupportedOperationException
+        /*McpClientWrapper search =
+                McpClientBuilder.create("mcp_industry_chain_search")
+                        .sseTransport("http://ecss-mcp-test.gf.com.cn/server/mcp/smartdata-mcp-server/sse")
+                        .header("iresearchauth",
+                                "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzc29BY2Nlc3NUb2tlbiI6IjQwODhkOGRjLTlkNjktNDAyYi04ZmJlLWJmM2UwNjMyZTgwZCIsInNzb1JlZnJlc2hUb2tlbiI6ImJkMWVmZDVlLTc2MjUtNDBjZS1iOWUyLWI1OGZmMmZmOGI1YyIsInN0YXR1c0Rlc2MiOiLlnKjogYwiLCJuYW1lIjoi6buE5pWP6ImvIiwic3lzQWRtaW4iOnRydWUsInRva2VuVHlwZSI6ImFjY2Vzc190b2tlbiIsInVzZXJOYW1lIjoiaHVhbmdtaW5saWFuZyIsImV4cCI6MTc5NDgxNTc0Nywic3VwZXJBZG1pbiI6dHJ1ZSwidXNlcklkIjoxODksImlhdCI6MTc5Mzk1MTc0Nywic3RhdHVzIjoxfQ.EYP01ej9oo40BWhiRIHTkNZjq4KNa_KLd0USdqIbDHQ")
+                        .header("Authorization", "Bearer 1efee036-a033-4569-9d75-590a293ac24e")
+                        .buildAsync()
+                        .block();
+        toolkit.registerMcpClient(search).block();
+        List<McpSchema.Tool> mcpTools = search.listTools().block();
+        if (mcpTools != null) {
+            mcpTools.forEach(tool -> permCtxBuilder.addAllowRule(tool.name(), allowCall(tool.name())));
+            log.info("MCP [{}] 已注册并放行工具：{}", search.getName(),
+                    mcpTools.stream().map(McpSchema.Tool::name).toList());
+        }*/
+        PermissionContextState permCtx = permCtxBuilder.build();
         return HarnessAgent.builder()
                 .model(modelCreator.streamModel())
                 .sysPrompt("你是一个学术渊博的智能机器人，可以回答用户的各种问题！你的名字叫青梧。")

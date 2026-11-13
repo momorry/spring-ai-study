@@ -2,7 +2,9 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
-    <link rel="icon" href="/favicon.ico">
+    <!-- favicon 放 public/ 根：dev 与 build 都能按 /favicon.png 命中，src/ 下的绝对路径在构建后必然 404 -->
+    <link rel="icon" type="image/png" href="/logo/favicon.png">
+    <link rel="apple-touch-icon" href="/logo/favicon.png">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- 与 router/index.js 的 TITLE_SUFFIX 保持一致：SPA 挂载前（以及无 meta.title 的路由）就显示这个 -->
     <title>青梧小筑</title>

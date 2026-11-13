@@ -261,8 +261,8 @@ const handleStreamError = (index, message) => {
   }
   loading.value = false
   ElMessage.error(message)
-  // AI 回答出错，通知刷新会话列表
-  window.dispatchEvent(new CustomEvent('refresh-session-list'))
+  // AI 回答出错，通知刷新会话列表（带上当前会话 id，供列表侧判断是否已存在）
+  window.dispatchEvent(new CustomEvent('refresh-session-list', { detail: { sessionId: sessionId.value } }))
   if (chatBoxRef.value) {
     chatBoxRef.value.scrollToBottom()
   }
@@ -334,8 +334,8 @@ const streamIntoMessage = (request, index, { onCompleted, errorTip = '发送消�
         if (chatBoxRef.value) {
           chatBoxRef.value.scrollToBottom({ force: false })
         }
-        // AI 回答完成，通知刷新会话列表
-        window.dispatchEvent(new CustomEvent('refresh-session-list'))
+        // AI 回答完成，通知刷新会话列表（带上当前会话 id，供列表侧判断是否已存在）
+        window.dispatchEvent(new CustomEvent('refresh-session-list', { detail: { sessionId: sessionId.value } }))
         return
       }
       

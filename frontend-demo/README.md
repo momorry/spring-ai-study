@@ -61,7 +61,7 @@ npm run format
 ```
 frontend-demo/
 ├── public/                  # 静态资源
-│   └── favicon.ico
+│   └── favicon.png          # 浏览器页签图标
 ├── src/
 │   ├── api/                 # API 接口
 │   │   └── user.js          # 用户相关接口示例

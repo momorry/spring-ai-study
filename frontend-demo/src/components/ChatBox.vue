@@ -14,7 +14,7 @@
         :class="['message-item', message.role]"
       >
         <div class="message-avatar">
-          <el-avatar :size="40" :style="{ backgroundColor: message.role === 'user' ? '#FAFAF5' : '#67c23a' }">
+          <el-avatar :size="40" :style="{ backgroundColor: message.role === 'user' ? '#A25663' : '#67c23a' }">
             {{ message.role === 'user' ? '我' : '青梧' }}
           </el-avatar>
         </div>

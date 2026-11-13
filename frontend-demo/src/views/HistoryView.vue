@@ -231,6 +231,33 @@ function refreshPreserveSearch() {
   })
 }
 
+// 对话结束/出错时的刷新入口：当前会话已在列表中就不再请求 page 接口，
+// 而是纯内存把它移到顶部；只有新会话（列表里还没有）才拉一次 page
+function handleRefreshSessionList(e) {
+  const sid = e?.detail?.sessionId || props.currentSessionId
+  if (sid && allSessions.value.some(s => s.sessionId === sid)) {
+    // 命中已存在会话：不发 page，本地置顶
+    moveSessionToFront(allSessions.value, sid)
+    // 第 1 页时 list 与 allSessions 是同一引用，避免重复移动
+    if (list.value !== allSessions.value) {
+      moveSessionToFront(list.value, sid)
+    }
+    return
+  }
+  refreshPreserveSearch()
+}
+
+// 把指定会话移到顶部，尊重后端“置顶优先、其次更新时间倒序”的排序：
+// 置顶项插到最前，非置顶项插到所有置顶项之后。返回是否命中
+function moveSessionToFront(arr, sid) {
+  const idx = arr.findIndex(s => s.sessionId === sid)
+  if (idx === -1) return false
+  const [item] = arr.splice(idx, 1)
+  const insertAt = item.pinned ? 0 : arr.filter(s => s.pinned).length
+  arr.splice(insertAt, 0, item)
+  return true
+}
+
 // 打开会话
 function openSession(item) {
   emit('select-session', item.sessionId)
@@ -333,8 +360,8 @@ onMounted(() => {
   if (scrollRef.value) {
     scrollRef.value.addEventListener('scroll', handleScroll)
   }
-  // 监听 AI 回答完成/出错事件，自动刷新会话列表
-  window.addEventListener('refresh-session-list', refreshPreserveSearch)
+  // 监听 AI 回答完成/出错事件：当前会话已在列表则不重复拉 page，仅新会话时加载
+  window.addEventListener('refresh-session-list', handleRefreshSessionList)
 })
 
 onUnmounted(() => {
@@ -342,7 +369,7 @@ onUnmounted(() => {
     scrollRef.value.removeEventListener('scroll', handleScroll)
   }
   // 移除事件监听
-  window.removeEventListener('refresh-session-list', refreshPreserveSearch)
+  window.removeEventListener('refresh-session-list', handleRefreshSessionList)
 })
 </script>
 
