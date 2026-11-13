@@ -14,6 +14,7 @@
       @new-conversation="handleNewConversation"
       @download-file="handleDownloadFile"
       @change-model="handleModelChange"
+      @confirm="handleConfirm"
     />
   </div>
 </template>
@@ -131,7 +132,15 @@ async function loadHistoryFromBackend(sid) {
         content: msg.content || '',
         thinking: msg.thinking || null,
         timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
-        fileInfo: msg.fileInfo || null
+        fileInfo: msg.fileInfo || null,
+        // 本轮调用过的工具（后端把 role=TOOL 的消息折叠到这里，不再单独成一条气泡）
+        toolCalls: Array.isArray(msg.toolCalls) && msg.toolCalls.length
+          ? msg.toolCalls
+          : null,
+        // 刷新前没处理完的人在回路待确认项：后端从上下文的 ASKING 状态把它补回来，否则会话就卡死了
+        confirmRequests: Array.isArray(msg.confirmRequests) && msg.confirmRequests.length
+          ? msg.confirmRequests
+          : null
       }))
     } else {
       // 没有历史记录，显示欢迎消息
@@ -216,6 +225,19 @@ const parseStreamEvent = (event) => {
   if (eventType === 'file') {
     return { type: 'file', fileInfo: event.fileInfo || null }
   }
+
+  // 人在回路：工具调用等待确认，本轮已暂停（不处理卡片会话会一直卡在 ASKING）
+  if (eventType === 'confirm') {
+    return {
+      type: 'confirm',
+      confirmRequests: Array.isArray(event.confirmRequests) ? event.confirmRequests : []
+    }
+  }
+
+  // 一次工具调用执行完毕：实时流下也把它折成工具调用痕迹，做到不刷新页面就能看到本轮调了什么
+  if (eventType === 'tool') {
+    return { type: 'tool', toolCalls: Array.isArray(event.toolCalls) ? event.toolCalls : [] }
+  }
   
   // 对话完成（携带本轮用户消息 ID，供后续按 ID 定位重新生成的回滚点）
   if (eventType === 'done') {
@@ -260,37 +282,40 @@ const applyTurnUserMessageId = (index, userMessageId) => {
   }
 }
 
-// 发送消息
-const handleSend = async (content) => {
-  const userMessage = {
-    role: 'user',
-    content: content,
-    thinking: null,
-    timestamp: Date.now()
-  }
-  messages.value.push(userMessage)
-  
-  const aiMessageIndex = messages.value.length
-  const aiMessage = {
-    role: 'assistant',
-    content: '',
-    thinking: '',
-    timestamp: Date.now()
-  }
-  messages.value.push(aiMessage)
-  
-  loading.value = true
-  
-  let thinkingContent = ''
-  let textContent = ''
+// 把实时流下发的工具调用结果追加到这条气泡上，字段与历史加载的 toolCalls 完全一致，复用同一个渲染分支。
+// 按 toolCallId 去重覆盖：同一次调用可能先来一条“执行中”、再来一条最终状态，留最后一条即可
+const appendToolCalls = (index, incoming) => {
+  const target = messages.value[index]
+  if (!target) return
+  const merged = Array.isArray(target.toolCalls) ? [...target.toolCalls] : []
+  incoming.forEach(item => {
+    const at = merged.findIndex(existing => existing.toolCallId === item.toolCallId)
+    if (at >= 0) {
+      merged[at] = { ...merged[at], ...item }
+    } else {
+      merged.push(item)
+    }
+  })
+  target.toolCalls = merged
+}
+
+// 统一的流式消费入口：正常发送、重新生成、确认恢复三条路径走的是同一份事件协议，
+// 差异只在收尾提示，所以只留一份解析与写入逻辑（否则新加一种事件时很容易只改其中一条路径）。
+// request 只写业务字段，公共字段（sessionId/userId/modelName）在此统一补齐；
+// index 是要写入的助手气泡下标——确认恢复复用暂停时的那一条气泡，不新开一条。
+const streamIntoMessage = (request, index, { onCompleted, errorTip = '发送消息失败，请稍后重试' } = {}) => {
+  const initial = messages.value[index]
+  // 累积量以气泡现状为起点：恢复流是接着上一段输出继续写的，从空串累加会把已展示的内容顶掉
+  let thinkingContent = initial?.thinking || ''
+  let textContent = initial?.content || ''
   let sessionIdCaptured = false
-  
+
   try {
     abortFn.value = sendChatMessageStream('/api/agent/conversation', {
-      message: content,
       sessionId: sessionId.value,
       userId: userStore.userInfo?.userId || '',
-      modelName: currentModel.value
+      modelName: currentModel.value,
+      ...request
     }, (event, isDone) => {
       // 从第一个事件中捕获后端返回的 sessionId
       if (!sessionIdCaptured && event && event.sessionId) {
@@ -305,6 +330,7 @@ const handleSend = async (content) => {
       
       if (isDone) {
         loading.value = false
+        if (onCompleted) onCompleted()
         if (chatBoxRef.value) {
           chatBoxRef.value.scrollToBottom({ force: false })
         }
@@ -315,7 +341,7 @@ const handleSend = async (content) => {
       
       if (event.error) {
         // fromServer：后端统一异常响应已给出可读原因，直接展示；网络层错误才加前缀
-        handleStreamError(aiMessageIndex, event.fromServer ? event.error : `请求失败: ${event.error}`)
+        handleStreamError(index, event.fromServer ? event.error : `请求失败: ${event.error}`)
         return
       }
       
@@ -323,30 +349,38 @@ const handleSend = async (content) => {
       
       if (parsed.type === 'thinking' && parsed.thinking) {
         thinkingContent += parsed.thinking
-        messages.value[aiMessageIndex].thinking = thinkingContent
+        messages.value[index].thinking = thinkingContent
       } else if (parsed.type === 'text' && parsed.text) {
         textContent += parsed.text
-        messages.value[aiMessageIndex].content = textContent
+        messages.value[index].content = textContent
       } else if (parsed.type === 'result') {
         if (parsed.thinking) {
           thinkingContent = parsed.thinking
-          messages.value[aiMessageIndex].thinking = thinkingContent
+          messages.value[index].thinking = thinkingContent
         }
         if (parsed.text) {
           textContent = parsed.text
-          messages.value[aiMessageIndex].content = textContent
+          messages.value[index].content = textContent
         }
       } else if (parsed.type === 'file' && parsed.fileInfo) {
         // 文件产物已生成，附加到消息上
-        messages.value[aiMessageIndex].fileInfo = parsed.fileInfo
-        console.log('文件产物已生成:', parsed.fileInfo)
+        messages.value[index].fileInfo = parsed.fileInfo
+      } else if (parsed.type === 'confirm' && parsed.confirmRequests.length) {
+        // 人在回路：Agent 已带着这些工具调用暂停本轮，把待确认项挂在这条气泡上等用户裁决；
+        // 不处理的话会话会停在 ASKING，之后发任何新消息都只会拿到一个报错
+        messages.value[index].confirmRequests = parsed.confirmRequests
+        ElMessage.warning('有操作等待你确认')
+      } else if (parsed.type === 'tool' && parsed.toolCalls.length) {
+        // 工具调用收尾：与刷新后从历史里读到的是同一份展示，不必等页面重加载
+        appendToolCalls(index, parsed.toolCalls)
       } else if (parsed.type === 'error') {
         // 后端流内异常收敛成的 ERROR 事件（如模型额度用完），收到即结束本轮，不必再等连接关闭
-        handleStreamError(aiMessageIndex, parsed.message)
+        handleStreamError(index, parsed.message)
         return
       } else if (parsed.type === 'done') {
         // 终止事件：即使 SSE 连接关闭有延迟，也先复位 loading
-        applyTurnUserMessageId(aiMessageIndex, parsed.userMessageId)
+        // （确认恢复那一轮后端不下发 userMessageId，这里会自行跳过，不会顶掉真正的回滚点）
+        applyTurnUserMessageId(index, parsed.userMessageId)
         loading.value = false
         return
       }
@@ -357,10 +391,57 @@ const handleSend = async (content) => {
       }
     })
   } catch (error) {
-    console.error('发送消息失败:', error)
-    ElMessage.error('发送消息失败，请稍后重试')
+    console.error(`${errorTip}:`, error)
+    ElMessage.error(errorTip)
     loading.value = false
   }
+}
+
+// 发送消息
+const handleSend = async (content) => {
+  messages.value.push({
+    role: 'user',
+    content: content,
+    thinking: null,
+    timestamp: Date.now()
+  })
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    thinking: '',
+    timestamp: Date.now()
+  })
+  
+  loading.value = true
+  streamIntoMessage({ message: content }, messages.value.length - 1)
+}
+
+// 人在回路：用户对单个待确认工具调用的裁决（允许本次 / 拒绝），提交后把暂停的会话推下去
+const handleConfirm = async ({ index, toolCallId, confirmed }) => {
+  const message = messages.value[index]
+  const target = message?.confirmRequests?.find(item => item.toolCallId === toolCallId)
+  // 已裁决过的条目不再接受第二次点击：同一个 ASKING 调用只认一次确认，重复提交会被服务端拒掉
+  if (!target || target.decision) {
+    return
+  }
+  if (loading.value) {
+    ElMessage.warning('请等待当前回答生成结束')
+    return
+  }
+  
+  // 先把结论写回卡片（按钮随即置灰），再发起恢复请求
+  target.decision = confirmed ? 'allow' : 'deny'
+  loading.value = true
+  
+  streamIntoMessage({
+    // 恢复请求不带 message：服务端不会把这次请求当成新一轮提问写进上下文
+    confirmResults: [{
+      toolCallId,
+      confirmed,
+      // 拒绝原因会作为 DENIED 工具结果写回模型上下文，给一句明确的中文比默认英文更可读
+      reason: confirmed ? '' : '用户拒绝执行该操作，请不要重试，改用其他方式回答'
+    }]
+  }, index, { errorTip: '提交确认失败，请稍后重试' })
 }
 
 // 停止生成
@@ -458,93 +539,21 @@ const handleRegenerate = async (index) => {
   
   loading.value = true
   
-  let thinkingContent = ''
-  let textContent = ''
-  let sessionIdCaptured2 = false
-  
-  try {
-    abortFn.value = sendChatMessageStream('/api/agent/conversation', {
-      message: userMessage.content,
-      sessionId: sessionId.value,
-      userId: userStore.userInfo?.userId || '',
-      modelName: currentModel.value,
-      // 告知服务端先把这一轮上下文回滚，再重放这条消息（否则会重复累积）
-      regenerate: true,
-      // 按消息 ID 精确定位回滚点；服务端定位不到会直接报错中止本次重新生成（不会退回去猜）
-      regenerateMessageId
-    }, (event, isDone) => {
-      // 从第一个事件中捕获后端返回的 sessionId
-      if (!sessionIdCaptured2 && event && event.sessionId) {
-        sessionIdCaptured2 = true
-        const newSid = event.sessionId
-        if (newSid !== sessionId.value) {
-          sessionId.value = newSid
-          currentSessionId.value = newSid
-          lastLoadedSid = newSid  // 同步更新，避免 watcher 重复加载历史
-        }
+  streamIntoMessage({
+    message: userMessage.content,
+    // 告知服务端先把这一轮上下文回滚，再重放这条消息（否则会重复累积）
+    regenerate: true,
+    // 按消息 ID 精确定位回滚点；服务端定位不到会直接报错中止本次重新生成（不会退回去猜）
+    regenerateMessageId
+  }, aiMessageIndex, {
+    errorTip: '重新生成失败，请稍后重试',
+    // 出错时后端同样会以 ERROR 事件正常收尾，此处不能再报“重新生成成功”
+    onCompleted: () => {
+      if (!messages.value[aiMessageIndex]?.error) {
+        ElMessage.success('已重新生成回复')
       }
-      
-      if (isDone) {
-        loading.value = false
-        // 出错时后端同样会以 ERROR 事件正常收尾，此处不能再报“重新生成成功”
-        if (!messages.value[aiMessageIndex]?.error) {
-          ElMessage.success('已重新生成回复')
-        }
-        if (chatBoxRef.value) {
-          chatBoxRef.value.scrollToBottom({ force: false })
-        }
-        window.dispatchEvent(new CustomEvent('refresh-session-list'))
-        return
-      }
-      
-      if (event.error) {
-        // fromServer：后端统一异常响应已给出可读原因，直接展示；网络层错误才加前缀
-        handleStreamError(aiMessageIndex, event.fromServer ? event.error : `请求失败: ${event.error}`)
-        return
-      }
-      
-      const parsed = parseStreamEvent(event)
-      
-      if (parsed.type === 'thinking' && parsed.thinking) {
-        thinkingContent += parsed.thinking
-        messages.value[aiMessageIndex].thinking = thinkingContent
-      } else if (parsed.type === 'text' && parsed.text) {
-        textContent += parsed.text
-        messages.value[aiMessageIndex].content = textContent
-      } else if (parsed.type === 'result') {
-        if (parsed.thinking) {
-          thinkingContent = parsed.thinking
-          messages.value[aiMessageIndex].thinking = thinkingContent
-        }
-        if (parsed.text) {
-          textContent = parsed.text
-          messages.value[aiMessageIndex].content = textContent
-        }
-      } else if (parsed.type === 'file' && parsed.fileInfo) {
-        // 文件产物已生成，附加到消息上
-        messages.value[aiMessageIndex].fileInfo = parsed.fileInfo
-        console.log('文件产物已生成:', parsed.fileInfo)
-      } else if (parsed.type === 'error') {
-        // 后端流内异常收敛成的 ERROR 事件（如模型额度用完），收到即结束本轮，不必再等连接关闭
-        handleStreamError(aiMessageIndex, parsed.message)
-        return
-      } else if (parsed.type === 'done') {
-        // 终止事件：即使 SSE 连接关闭有延迟，也先复位 loading
-        applyTurnUserMessageId(aiMessageIndex, parsed.userMessageId)
-        loading.value = false
-        return
-      }
-      
-      // 同上：重新生成的流式输出也不打断用户往上翻看历史
-      if (chatBoxRef.value) {
-        chatBoxRef.value.scrollToBottom({ force: false })
-      }
-    })
-  } catch (error) {
-    console.error('重新生成失败:', error)
-    ElMessage.error('重新生成失败，请稍后重试')
-    loading.value = false
-  }
+    }
+  })
 }
 </script>
 

@@ -1,8 +1,13 @@
 package com.moli.agent.scope.service;
 
 import com.moli.agent.scope.common.base.BizException;
+import com.moli.agent.scope.common.vo.ConfirmDecision;
+import com.moli.agent.scope.common.vo.ConfirmRequest;
+import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.ToolCallState;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.core.state.VersionedState;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
@@ -12,7 +17,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 会话上下文（AgentState）的写侧操作。
@@ -126,6 +134,175 @@ public class ConversationContextService {
         log.info("重新生成：已回滚上下文, userId={}, sessionId={}, 回滚点下标={}, 删除 {} 条消息, 剩余 {} 条",
                 userId, sessionId, rollbackIndex, removed, context.size());
         return removed;
+    }
+
+    /**
+     * 查出会话当前「等待用户确认」的工具调用（人在回路待确认项）。
+     * <p>与 SDK 内部 {@code ReActAgent.CallExecution#askingToolCalls()} 保持同一口径：
+     * 只看最后一条 ASSISTANT 消息，命中 ASKING 状态的 {@code ToolUseBlock} 才算待确认。
+     * 这个口径必须对齐，否则这里报“有待确认”而框架报“没有”（或反之），
+     * 两边的判断会互相打脸。
+     * <p>ASKING 状态随 AgentState 一同落库（{@code ToolUseBlock} 的 state 字段参与 JSON 序列化），
+     * 因此刷新页面、重启服务后重新进同一会话，确认卡片依旧能恢复。
+     * <p>只读不写，不依赖 Agent 的本地状态缓存（缓存实例与本次 HTTP 请求未必同一 JVM），
+     * 直接读持久化存储——那才是下一次 call 开始时真正被重新加载的权威源。
+     *
+     * @param userId    用户ID
+     * @param sessionId 会话ID
+     * @return 待确认的工具调用；无会话状态、无 ASKING 调用时返回空列表
+     */
+    public List<ToolUseBlock> askingToolCalls(String userId, String sessionId) {
+        if (StringUtils.isBlank(sessionId)) {
+            return List.of();
+        }
+        VersionedState<AgentState> versioned = agentStateStore.getVersioned(
+                userId, sessionId, STATE_KEY_AGENT, AgentState.class);
+        if (!versioned.isPresent() || versioned.value() == null) {
+            return List.of();
+        }
+        List<Msg> context = versioned.value().getContext();
+        for (int i = context.size() - 1; i >= 0; i--) {
+            Msg msg = context.get(i);
+            if (msg == null || msg.getRole() != MsgRole.ASSISTANT) {
+                continue;
+            }
+            // 只看最后一条 assistant 消息就返回（可能是空列表），与 SDK 口径一致
+            return msg.getContentBlocks(ToolUseBlock.class).stream()
+                    .filter(toolUse -> toolUse.getState() == ToolCallState.ASKING)
+                    .toList();
+        }
+        return List.of();
+    }
+
+    /**
+     * 会话上下文里最后一条用户提问的原文。
+     * <p>人在回路恢复那次调用只带裁决 metadata、不带文本（框架也不会把它追加进上下文），
+     * 因此产物中间件那一轮拿不到提问原文，写出的产物会缺 [用户] 那一行，这里按上下文补回来。
+     * <p>只读不写。多一次状态读取可以接受：确认恢复是用户点一次才发生一次的低频路径。
+     *
+     * @param userId    用户ID
+     * @param sessionId 会话ID
+     * @return 提问原文；无会话状态或上下文里没有带文本的用户消息时返回空串
+     */
+    public String lastUserMessageText(String userId, String sessionId) {
+        if (StringUtils.isBlank(sessionId)) {
+            return "";
+        }
+        VersionedState<AgentState> versioned = agentStateStore.getVersioned(
+                userId, sessionId, STATE_KEY_AGENT, AgentState.class);
+        if (!versioned.isPresent() || versioned.value() == null) {
+            return "";
+        }
+        List<Msg> context = versioned.value().getContext();
+        for (int i = context.size() - 1; i >= 0; i--) {
+            Msg msg = context.get(i);
+            if (msg == null || msg.getRole() != MsgRole.USER) {
+                continue;
+            }
+            // 确认恢复时框架会追加一条只带 metadata 的 USER 消息，文本为空则继续往前找
+            String text = StringUtils.trimToEmpty(msg.getTextContent());
+            if (!text.isEmpty()) {
+                return text;
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 把前端的确认裁决加回成 SDK 的 {@code ConfirmResult}（人在回路恢复的组装环节）。
+     * <p>入参以会话上下文里那条 ASKING 的 {@code ToolUseBlock} 原始值为准，只从前端拿
+     * 「哪个调用、允许还是拒绝、拒绝原因」三件事。若直接拿前端回传的 toolCall 去恢复，
+     * 确认卡片就成了改命令的入口（前端改一下 path / command，被确认执行的却是另一个）。
+     * <p>校验都在返回之前完成，对不上直接抛 {@link BizException}，不会把错误的 metadata 下发给框架：
+     * 框架的 {@code validateAndAcceptConfirmResults} 同样会拒，但它报的是面向开发者的长篇 IllegalState。
+     *
+     * @param userId    用户ID
+     * @param sessionId 会话ID
+     * @param decisions 前端的裁决列表
+     * @return 与 ASKING 调用一一对应的 ConfirmResult，非空
+     * @throws BizException 没有等待确认的操作，或裁决 ID 为空/重复/对不上
+     */
+    public List<ConfirmResult> buildConfirmResults(String userId, String sessionId,
+                                                   List<ConfirmDecision> decisions) {
+        List<ToolUseBlock> asking = askingToolCalls(userId, sessionId);
+        if (asking.isEmpty()) {
+            log.warn("确认恢复失败：会话没有等待确认的工具调用, userId={}, sessionId={}", userId, sessionId);
+            throw new BizException("没有等待确认的操作，可能已经处理过了，请重新发送你的问题");
+        }
+        Map<String, ToolUseBlock> askingById = new LinkedHashMap<>();
+        for (ToolUseBlock toolUse : asking) {
+            if (StringUtils.isNotBlank(toolUse.getId())) {
+                askingById.put(toolUse.getId(), toolUse);
+            }
+        }
+
+        List<ConfirmResult> results = new ArrayList<>();
+        for (ConfirmDecision decision : decisions) {
+            if (decision == null || StringUtils.isBlank(decision.getToolCallId())) {
+                throw new BizException("确认请求缺少工具调用标识，请在确认卡片上重新操作一次");
+            }
+            ToolUseBlock toolCall = askingById.remove(decision.getToolCallId());
+            if (toolCall == null) {
+                log.warn("确认恢复失败：裁决的调用 ID 不在待确认列表里（重复提交或会话已更新）, sessionId={}, id={}",
+                        sessionId, decision.getToolCallId());
+                throw new BizException("这个确认已经失效了（会话已更新或重复提交），请刷新页面后重试");
+            }
+            results.add(new ConfirmResult(decision.isConfirmed(), toolCall, null, decision.getReason()));
+        }
+        return results;
+    }
+
+    /**
+     * 会话当前待确认项的前端视图（用于非流式场景恢复确认卡片）。
+     * <p>刷新页面、切换会话、重启服务后重新打开同一个会话时，流里的 CONFIRM 事件早已飞走，
+     * 但上下文里的 ASKING 状态依旧在——此时必须从历史接口把卡片补回来，
+     * 否则用户既看不到待确认入口，又因为会话卡在 ASKING 而发不进任何新消息。
+     *
+     * @param userId    用户ID
+     * @param sessionId 会话ID
+     * @return 待确认列表；无待确认项时为空列表
+     */
+    public List<ConfirmRequest> askingConfirmRequests(String userId, String sessionId) {
+        return toConfirmRequests(askingToolCalls(userId, sessionId));
+    }
+
+    /**
+     * 把 SDK 的待确认工具调用转成前端的确认卡片数据（事件下发与历史恢复两条路径共用）。
+     * <p>{@code toolCallId} 是恢复会话的唯一凭据，必须原样下发、原样回收。
+     * <p>这里只下发“要做什么”的展示信息，工具入参的具体值不会被当成恢复依据（见
+     * {@link #buildConfirmResults}），所以确认卡片不是改命令的入口。
+     */
+    public List<ConfirmRequest> toConfirmRequests(List<ToolUseBlock> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return List.of();
+        }
+        return toolCalls.stream().map(ConversationContextService::toConfirmRequest).toList();
+    }
+
+    private static ConfirmRequest toConfirmRequest(ToolUseBlock toolUse) {
+        // 反射构造的工具调用有可能没带 input，兼容为空的情况，不让确认卡片在渲染时抛 NPE
+        Map<String, Object> input = toolUse.getInput() == null ? Map.of() : toolUse.getInput();
+        return ConfirmRequest.builder()
+                .toolCallId(toolUse.getId())
+                .toolName(toolUse.getName())
+                .arguments(input)
+                .argumentSummary(summarizeToolInput(input))
+                .build();
+    }
+
+    /**
+     * 确认卡片上的一行摘要：优先取最能说明“要动什么”的参数（命令原文 / 目录路径），
+     * 其余工具退化为入参文本，省掉前端为每个工具写一套取值判断
+     */
+    private static String summarizeToolInput(Map<String, Object> input) {
+        Object summary = input.get("command");
+        if (summary == null) {
+            summary = input.get("path");
+        }
+        if (summary != null) {
+            return StringUtils.abbreviate(String.valueOf(summary), 300);
+        }
+        return input.isEmpty() ? "（无参数）" : StringUtils.abbreviate(input.toString(), 300);
     }
 
     /** 按消息 ID 正序查找目标用户消息的下标；ID 为空或找不到返回 -1 */

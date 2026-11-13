@@ -61,6 +61,23 @@
             <artifactId>agentscope-extensions-model-openai</artifactId>
             <version>2.0.4</version>
         </dependency>
+        <!-- Source: https://mvnrepository.com/artifact/io.agentscope/agentscope-extensions-model-anthropic -->
+        <!--<dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-model-anthropic</artifactId>
+            <version>2.0.4</version>
+            <scope>compile</scope>
+        </dependency>-->
+
+
+        <!-- Source: https://mvnrepository.com/artifact/io.agentscope/agentscope-extensions-model -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-model</artifactId>
+            <version>2.0.4</version>
+            <type>pom</type>
+            <scope>compile</scope>
+        </dependency>
 
         <!-- AgentScope MySQL 持久化扩展：将 Agent 会话状态存储到 MySQL（agentscope_sessions 表） -->
         <dependency>

@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration debug="false">
+	<!--定义日志文件的存储地址 勿在 LogBack 的配置中使用相对路径-->
+	<!-- 读取spring.application.name中的属性来生成日志文件名 -->
+	<springProperty scope="context" name="filePath" source="logback.file.path" defaultValue="/opt/agent-scope-demo/logs"/>
+	<springProperty scope="context" name="fileName" source="logback.file.code" defaultValue="agent-scope-demo"/>
+
+	<!-- 控制台输出 -->
+	<appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+		<encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+			<!--格式化输出：%d表示日期，%thread表示线程名，%-5level：级别从左显示5个字符宽度%msg：日志消息，%n是换行符-->
+			<pattern>
+				%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%green(%-15.15thread)] [%X{traceId}] - %blue(%-45.45logger{44}) %yellow(%L): %msg%n
+			</pattern>
+		</encoder>
+	</appender>
+	<!-- 控制台输出（nccp专用，不带任何的颜色高亮标记，避免太多无效字符影响问题定位） -->
+	<appender name="STDOUT_NCCP" class="ch.qos.logback.core.ConsoleAppender">
+		<encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+			<!--格式化输出：%d表示日期，%thread表示线程名，%-5level：级别从左显示5个字符宽度%msg：日志消息，%n是换行符-->
+			<!--根据日志规范，单条日志不允许超过64KB，UTF8编码中文占3字节（罕见4字节，英文1字节），按照全部常规中文字符折中统计，最多打印21845个字符，冗余抹零为20000 -->
+			<pattern>
+				%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%-15.15thread] [%X{traceId}] - %-45.45logger{44} %L: %.-20000msg%n
+			</pattern>
+		</encoder>
+	</appender>
+	<!-- 按照每天生成日志文件 -->
+	<appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+		<rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+			<!--日志文件输出的文件名-->
+			<fileNamePattern>${filePath}/${fileName}.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+			<!--日志文件保留天数-->
+			<maxHistory>30</maxHistory>
+			<!--日志文件最大的大小-->
+			<maxFileSize>100MB</maxFileSize>
+		</rollingPolicy>
+		<encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+			<!--格式化输出：%d表示日期，%thread表示线程名，%-5level：级别从左显示5个字符宽度%msg：日志消息，%n是换行符-->
+			<pattern>
+				%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%-15.15thread] [%X{traceId}] - %-45.45logger{44} %L: %.-20000msg%n
+			</pattern>
+		</encoder>
+		<!--&lt;!&ndash;日志文件最大的大小&ndash;&gt;-->
+		<!--<triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">-->
+		<!--<MaxFileSize>10MB</MaxFileSize>-->
+		<!--</triggeringPolicy>-->
+	</appender>
+
+	<appender name="ERROR_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+		<rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+			<!--日志文件输出的文件名-->
+			<fileNamePattern>${filePath}/${fileName}.error.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+			<!--日志文件保留天数-->
+			<maxHistory>30</maxHistory>
+			<!--日志文件最大的大小-->
+			<maxFileSize>100MB</maxFileSize>
+		</rollingPolicy>
+		<encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+			<!--格式化输出：%d表示日期，%thread表示线程名，%-5level：级别从左显示5个字符宽度%msg：日志消息，%n是换行符-->
+			<pattern>
+				%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%-15.15thread] [%X{traceId}] - %-45.45logger{44} %L: %.-20000msg%n
+			</pattern>
+		</encoder>
+		<!--&lt;!&ndash;日志文件最大的大小&ndash;&gt;-->
+		<!--<triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">-->
+		<!--<MaxFileSize>10MB</MaxFileSize>-->
+		<!--</triggeringPolicy>-->
+		<filter class="ch.qos.logback.classic.filter.LevelFilter">
+			<level>ERROR</level>
+			<onMatch>ACCEPT</onMatch>
+			<onMismatch>DENY</onMismatch>
+		</filter>
+	</appender>
+    <!-- 本地默认console样式带颜色标记，方便定位区分 -->
+    <springProfile name="local">
+        <root level="INFO">
+            <appender-ref ref="STDOUT"/>
+            <appender-ref ref="FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="prod">
+        <root level="INFO">
+            <appender-ref ref="FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </root>
+    </springProfile>
+</configuration>

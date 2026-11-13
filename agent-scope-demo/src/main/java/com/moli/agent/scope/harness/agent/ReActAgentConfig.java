@@ -5,8 +5,14 @@ import com.moli.agent.scope.harness.middleware.DynamicModelMiddleware;
 import com.moli.agent.scope.harness.middleware.FileGenMiddleware;
 import com.moli.agent.scope.harness.middleware.StopOnAllDeniedMiddleware;
 import com.moli.agent.scope.harness.model.ModelCreator;
+import com.moli.agent.scope.harness.tools.WeatherTool;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.middleware.MiddlewareBase;
+import io.agentscope.core.permission.PermissionBehavior;
+import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.permission.PermissionMode;
+import io.agentscope.core.permission.PermissionRule;
+import io.agentscope.core.tool.Toolkit;
 import io.agentscope.extensions.mysql.state.MysqlAgentStateStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import lombok.extern.slf4j.Slf4j;
@@ -80,12 +86,41 @@ public class ReActAgentConfig {
         middlewareBases.add(new StopOnAllDeniedMiddleware());
         // 动态模型：使前端切换的模型名在本次调用的每次模型请求中生效
         middlewareBases.add(new DynamicModelMiddleware(modelCreator));
+
+        // 人在回路门禁：这两个工具每次被调用都暂停等用户确认。
+        // 两个要点（均按 agentscope-core 2.0.4 源码核实）：
+        // 一、必须至少往 context 里放一条规则，否则 PermissionContextState.isTrivial() 为 true，
+        //     ReActAgent 走「只调工具自检」的轻量分支，注解工具的自检恒为 PASSTHROUGH，等于完全放行；
+        // 二、注解式工具的 matchRule 未被覆写（ToolBase 默认只有 ruleContent==null 才算命中），
+        //     所以这里不能写带内容的规则（如命令前缀、路径前缀），只能整工具级一律 ASK。
+        PermissionContextState permCtx =
+                PermissionContextState.builder()
+                        .mode(PermissionMode.DEFAULT)
+                        .addAllowRule(WeatherTool.TOOL_NAME, allowCall(WeatherTool.TOOL_NAME))
+                        .build();
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(new WeatherTool());
         return HarnessAgent.builder()
                 .model(modelCreator.streamModel())
                 .sysPrompt("你是一个学术渊博的智能机器人，可以回答用户的各种问题！你的名字叫青梧。")
                 .name("qing wu")
                 .middlewares(middlewareBases)
+                .permissionContext(permCtx)
+                .toolkit(toolkit)
                 .stateStore(mysqlAgentStateStore)
                 .build();
+    }
+
+    /**
+     * 构造一条「该工具每次调用都要用户确认」的 ASK 规则。
+     * <p>ruleContent 必须为 null：非 null 时会交给 {@code ToolBase.matchRule} 判定，而注解式工具没有
+     * 覆写过它（默认只在 ruleContent==null 时返回 true），带内容的规则永远匹配不上。
+     */
+    private static PermissionRule askEveryCall(String toolName) {
+        return new PermissionRule(toolName, null, PermissionBehavior.ASK, "policy");
+    }
+
+    private static PermissionRule allowCall(String toolName) {
+        return new PermissionRule(toolName, null, PermissionBehavior.ALLOW, "userSettings");
     }
 }

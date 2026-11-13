@@ -9,9 +9,11 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.AgentResultEvent;
 import io.agentscope.core.event.CustomEvent;
+import io.agentscope.core.message.GenerateReason;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
+import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 
 import java.io.IOException;
@@ -23,8 +25,10 @@ import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -32,7 +36,12 @@ import java.util.function.Function;
  * 对话产物生成中间件：在每次 Agent 调用结束后，
  * 将用户输入和 AI 回复追加写入一个 TXT 文件作为产物输出，
  * 同时将产物信息持久化到数据库，以便历史消息查询时能够还原。
+ *
+ * <p>只对“真正答完了”的那一轮开产物：本轮被人在回路暂停时，上层会拿到一个带
+ * {@link GenerateReason#PERMISSION_ASKING} 的结果消息（内容只是“让我调用工具”那段中间输出），
+ * 若不拦住，产物会在工具调用阶段就生成，并把 messageId 钉在中间消息上。
  */
+@Slf4j
 public class FileGenMiddleware implements MiddlewareBase {
 
     /**
@@ -47,6 +56,28 @@ public class FileGenMiddleware implements MiddlewareBase {
      * CustomEvent 的 name 标识：产物文件已生成
      */
     public static final String EVENT_FILE_GENERATED = "file_generated";
+
+    /**
+     * RuntimeContext 属性键：人在回路恢复那次调用补传的用户提问原文。
+     * <p>恢复请求只带裁决 metadata、不带提问（见 {@code SimpleHarnessActAgent}），本轮输入里抽不到用户文本，
+     * 不从这里取的话，产物会只剩 [AI] 那一段。
+     */
+    public static final String CTX_KEY_RESUME_USER_TEXT = "fileGenResumeUserText";
+
+    /**
+     * 本轮没有产出最终回答的原因：这些情况下 {@code AgentResultEvent} 里的是中间输出或被停下/中断的残体，
+     * 不该据此生成产物。正常答完时该字段不下发，{@code Msg#getGenerateReason()} 缺省返回 MODEL_STOP，不在此列。
+     */
+    private static final Set<GenerateReason> TURN_NOT_FINISHED = EnumSet.of(
+            GenerateReason.TOOL_CALLS,
+            GenerateReason.TOOL_SUSPENDED,
+            GenerateReason.REASONING_STOP_REQUESTED,
+            GenerateReason.ACTING_STOP_REQUESTED,
+            GenerateReason.MIDDLEWARE_STOP_REQUESTED,
+            GenerateReason.PERMISSION_ASKING,
+            GenerateReason.ALL_TOOLS_DENIED,
+            GenerateReason.INTERRUPTED,
+            GenerateReason.MAX_ITERATIONS);
 
     /**
      * 消息文件产物管理器（通过构造函数注入）
@@ -74,6 +105,13 @@ public class FileGenMiddleware implements MiddlewareBase {
                 userTexts.add(text);
             }
         }
+        if (userTexts.isEmpty()) {
+            // 确认恢复那一轮：本次输入只有裁决 metadata，提问原文由服务端从上下文取出后随 RuntimeContext 下发
+            Object resumeText = ctx.get(CTX_KEY_RESUME_USER_TEXT);
+            if (resumeText instanceof String text && !text.isBlank()) {
+                userTexts.add(text);
+            }
+        }
 
         // 收集 AI 回复（从 AgentResultEvent 中提取）
         List<String> assistantTexts = new ArrayList<>();
@@ -85,22 +123,36 @@ public class FileGenMiddleware implements MiddlewareBase {
                 .doOnNext(event -> {
                     if (event instanceof AgentResultEvent resultEvent) {
                         Msg result = resultEvent.getResult();
-                        if (result != null) {
-                            String text = result.getTextContent();
-                            if (text != null && !text.isBlank()) {
-                                assistantTexts.add(text);
-                            }
-                            // 提取消息ID（从 Msg 的 id 字段）
-                            aiMessageId.set(extractMessageId(result));
+                        if (result == null) {
+                            return;
                         }
+                        // 本轮没答完（最常见的是命中 ASK 规则被暂停）：这段只是“让我调用工具”的中间输出，
+                        // 既不写进产物正文，也不拿它的 messageId 去落库，否则产物会在工具调用阶段就出现在前端
+                        GenerateReason reason = result.getGenerateReason();
+                        if (reason != null && TURN_NOT_FINISHED.contains(reason)) {
+                            log.info("[FileGenMiddleware] 本轮未产出最终回答(generateReason={})，不生成产物: sessionId={}",
+                                    reason, ctx.getSessionId());
+                            return;
+                        }
+                        String text = result.getTextContent();
+                        if (text != null && !text.isBlank()) {
+                            assistantTexts.add(text);
+                        }
+                        // 提取消息ID（从 Msg 的 id 字段）
+                        aiMessageId.set(extractMessageId(result));
                     }
                 })
                 // 流结束后写入文件，并将产物地址作为 CustomEvent 发射给下游
                 .concatWith(Flux.defer(() -> {
-                    Path filePath = writeConversationToFile(ctx, aiMessageId.get(), userTexts, assistantTexts);
+                    String messageId = aiMessageId.get();
+                    // 没有最终回答就没有产物：以前这里会照写不误，落到 conversation_null.md 或一份只有用户提问的空文件
+                    if (messageId == null || assistantTexts.isEmpty()) {
+                        return Flux.empty();
+                    }
+                    Path filePath = writeConversationToFile(ctx, messageId, userTexts, assistantTexts);
                     if (filePath != null) {
                         // 持久化文件产物记录到数据库
-                        persistFileRecord(ctx, filePath, aiMessageId.get());
+                        persistFileRecord(ctx, filePath, messageId);
 
                         // 构建 FileInfo 对象
                         String fileName = filePath.getFileName().toString();
@@ -117,7 +169,7 @@ public class FileGenMiddleware implements MiddlewareBase {
                                 .fileUrl(fileUrl)
                                 .fileSize(fileSize)
                                 .fileType("text/plain")
-                                .messageId(aiMessageId.get() != null ? aiMessageId.get() : "")
+                                .messageId(messageId)
                                 .build();
                         Map<String, Object> file = JsonUtil.fromJson(JsonUtil.toJson(fileInfo), new TypeReference<Map<String, Object>>() {
                         });

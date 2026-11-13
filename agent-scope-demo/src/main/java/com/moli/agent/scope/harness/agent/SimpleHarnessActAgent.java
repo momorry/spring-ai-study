@@ -6,8 +6,11 @@ import com.moli.agent.scope.common.dao.manager.MChatMessageFileManager;
 import com.moli.agent.scope.common.dao.manager.MChatSessionManager;
 import com.moli.agent.scope.common.vo.ChatStreamEvent;
 import com.moli.agent.scope.common.enums.MyAgentEvent;
+import com.moli.agent.scope.common.vo.ConfirmDecision;
+import com.moli.agent.scope.common.vo.ConfirmRequest;
 import com.moli.agent.scope.common.vo.FileInfo;
 import com.moli.agent.scope.common.vo.InConversationVo;
+import com.moli.agent.scope.common.vo.ToolCallVo;
 import com.moli.agent.scope.harness.middleware.DynamicModelMiddleware;
 import com.moli.agent.scope.harness.middleware.FileGenMiddleware;
 import com.moli.agent.scope.service.ConversationContextService;
@@ -24,13 +27,22 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 @RequiredArgsConstructor
 @Service
 @Slf4j
 public class SimpleHarnessActAgent {
+
+    /**
+     * 工具输出摘要的内存上限：一次工具调用可能回几十万字（读文件、跑命令），
+     * 展示只留前 {@link ToolCallVo#SUMMARY_MAX_LENGTH} 字，多攒一点仅为保留尾部换行便于 strip，没必要全存。
+     */
+    private static final int TOOL_OUTPUT_BUFFER_LIMIT = ToolCallVo.SUMMARY_MAX_LENGTH * 2;
 
     private final HarnessAgent harnessAgent;
 
@@ -74,36 +86,60 @@ public class SimpleHarnessActAgent {
         log.info("请求模型: {}", StringUtils.defaultIfBlank(conversationVo.getModelName(), "(未指定，使用默认模型)"));
         log.info("是否重新生成: {}, 重放的目标消息 ID: {}", conversationVo.isRegenerate(),
                 StringUtils.defaultIfBlank(conversationVo.getRegenerateMessageId(), "(未传)"));
+        List<ConfirmDecision> confirmDecisions = conversationVo.getConfirmResults();
+        // 人在回路恢复：本次带的不是新提问，而是上一轮被 ASK 规则暂停的那些工具调用的裁决
+        boolean resumeByConfirm = confirmDecisions != null && !confirmDecisions.isEmpty();
+        log.info("待确认裁决: {} 条", resumeByConfirm ? confirmDecisions.size() : 0);
+
+        // userId 以 JWT 认证身份为准（Controller 已在请求线程写入 VO），为空时兜底
+        String userId = conversationVo.getUserId().toString();
 
         // 预先指定本轮用户消息 ID（不指则 SDK 会随机生成一个我们拿不到的）：
         // 一、重新生成需要按 ID 在上下文里精确定位回滚点（多条文本相同的消息只能靠 ID 区分）；
         // 二、该 ID 会随 DONE 事件回传前端，前端归到这条回答上，下次重新生成时原样带回
         String userMessageId = UUID.randomUUID().toString();
-        UserMessage userMessage = UserMessage.builder()
-                .id(userMessageId)
-                .content(TextBlock.builder().text(conversationVo.getMessage()).build())
-                .build();
-        // userId 以 JWT 认证身份为准（Controller 已在请求线程写入 VO），为空时兜底
-        String userId = conversationVo.getUserId().toString();
-
-        // 重新生成：先把上下文回滚到这条用户消息之前，再重放它。
-        // 必须排在 streamEvents 之前（Agent 一跑就会把这条消息追加回上下文），也排在会话元数据刷新之前。
-        // 不捕获异常：定位不到回滚点就当场失败，让它冒到 HTTP 响应（此时 SSE 尚未建连，
-        // 前端走 !response.ok 分支）；若退化为直接追加，会把上下文静默改脏，比报错更难排查
-        if (conversationVo.isRegenerate()) {
-            conversationContextService.truncateForRegenerate(
-                    userId, conversationVo.getSessionId(),
-                    conversationVo.getRegenerateMessageId(), conversationVo.getMessage());
+        UserMessage userMessage;
+        String resumeUserText = "";
+        if (resumeByConfirm) {
+            // 拿 toolCallId 到会话上下文里找回那条 ASKING 调用并组装 ConfirmResult（入参以服务端原始值为准），
+            // 对不上当场抛 BizException：此时 SSE 尚未建连，前端走非 2xx 分支提示，不会把垃圾 metadata 下发给框架
+            List<ConfirmResult> confirmResults = conversationContextService.buildConfirmResults(
+                    userId, conversationVo.getSessionId(), confirmDecisions);
+            // 本次输入不带提问文本，产物中间件那一轮抽不到 [用户]，从上下文取回原提问随上下文下发
+            resumeUserText = conversationContextService.lastUserMessageText(userId, conversationVo.getSessionId());
+            // 只挂 metadata、不带文本：框架在 ASKING 分支只读这条 metadata，不会把本次输入消息追加进上下文
+            userMessage = UserMessage.builder()
+                    .id(userMessageId)
+                    .metadata(Map.of(Msg.METADATA_CONFIRM_RESULTS, confirmResults))
+                    .build();
+        } else {
+            userMessage = UserMessage.builder()
+                    .id(userMessageId)
+                    .content(TextBlock.builder().text(conversationVo.getMessage()).build())
+                    .build();
         }
 
-        // 记录/刷新历史会话列表元数据（m_chat_session）；失败不影响本次对话
-        try {
-            String sid = chatSessionManager.touchOnUserMessage(
-                    conversationVo.getUserId(), conversationVo.getSessionId(), conversationVo.getMessage(),
-                    conversationVo.isRegenerate());
-            conversationVo.setSessionId(sid);
-        } catch (Exception e) {
-            log.warn("记录历史会话列表失败（不影响本次对话）: {}", e.getMessage());
+        // 确认恢复不是一轮新对话：上下文里这条消息不会被追加，因此既不用回滚，也不该刷新会话列表预览
+        if (!resumeByConfirm) {
+            // 重新生成：先把上下文回滚到这条用户消息之前，再重放它。
+            // 必须排在 streamEvents 之前（Agent 一跑就会把这条消息追加回上下文），也排在会话元数据刷新之前。
+            // 不捕获异常：定位不到回滚点就当场失败，让它冒到 HTTP 响应（此时 SSE 尚未建连，
+            // 前端走 !response.ok 分支）；若退化为直接追加，会把上下文静默改脏，比报错更难排查
+            if (conversationVo.isRegenerate()) {
+                conversationContextService.truncateForRegenerate(
+                        userId, conversationVo.getSessionId(),
+                        conversationVo.getRegenerateMessageId(), conversationVo.getMessage());
+            }
+
+            // 记录/刷新历史会话列表元数据（m_chat_session）；失败不影响本次对话
+            try {
+                String sid = chatSessionManager.touchOnUserMessage(
+                        conversationVo.getUserId(), conversationVo.getSessionId(), conversationVo.getMessage(),
+                        conversationVo.isRegenerate());
+                conversationVo.setSessionId(sid);
+            } catch (Exception e) {
+                log.warn("记录历史会话列表失败（不影响本次对话）: {}", e.getMessage());
+            }
         }
 
 
@@ -115,10 +151,16 @@ public class SimpleHarnessActAgent {
         if (StringUtils.isNotBlank(conversationVo.getModelName())) {
             contextBuilder.put(DynamicModelMiddleware.MODEL_NAME_KEY, conversationVo.getModelName().trim());
         }
+        if (resumeByConfirm && StringUtils.isNotBlank(resumeUserText)) {
+            contextBuilder.put(FileGenMiddleware.CTX_KEY_RESUME_USER_TEXT, resumeUserText);
+        }
         RuntimeContext rc = contextBuilder.build();
 
         log.info("开始调用 ReAct Agent 流式接口...");
         final String streamSessionId = conversationVo.getSessionId();
+        // 工具输出按调用 ID 累积：ToolResultEndEvent 本身不带输出内容，摘要只能从 TOOL_RESULT_TEXT_DELTA 增量里攒。
+        // 放在方法局部而不是字段：本 Service 是单例，共用会把其他请求的工具输出串进当前气泡
+        Map<String, StringBuilder> toolOutputs = new ConcurrentHashMap<>();
         // 关键修复：不在此处 subscribe()。streamEvents 返回的是冷流，
         // 若这里订阅一次、再把它返回给 Spring MVC 订阅一次，Agent 会被执行两遍（两次真实模型调用）。
         // 仅挂载日志算子后返回，由 MVC 订阅一次即可。
@@ -134,7 +176,7 @@ public class SimpleHarnessActAgent {
                         log.debug("【事件对象】{}", event);
                     }
                 })
-                .map(event -> toStreamEvent(event, streamSessionId))
+                .map(event -> toStreamEvent(event, streamSessionId, toolOutputs))
                 // 长时间无事件（模型卡死、工具 hang）→ TimeoutException，同样交给 onErrorResume 收敛
                 .timeout(Duration.ofSeconds(idleTimeoutSeconds))
                 // 关键：SSE 一旦建连（200 + text/event-stream），异常绝不能再以 error 信号抛出——
@@ -146,7 +188,8 @@ public class SimpleHarnessActAgent {
                 .concatWith(Flux.just(ChatStreamEvent.builder()
                         .type(MyAgentEvent.DONE)
                         .sessionId(streamSessionId)
-                        .userMessageId(userMessageId)
+                        // 确认恢复那次调用的消息 ID 不会落进上下文，下发反而会顶掉前端存着的真正回滚点
+                        .userMessageId(resumeByConfirm ? null : userMessageId)
                         .build()))
                 .doOnNext(event -> log.info("【发出事件】type={}, sessionId={}", event.getType(), event.getSessionId()))
                 .doOnComplete(() -> log.info("========== 流式响应完成 =========="));
@@ -189,6 +232,11 @@ public class SimpleHarnessActAgent {
      */
     private String resolveFriendlyMessage(Throwable error) {
         String chain = causeChainText(error);
+        // 会话停在 ASKING 时又发了新提问：框架会抛一大段面向开发者的 IllegalState（含恢复示例代码），
+        // 对用户只会读到“确认卡片还没处理”，必须抢在其他关键字之前识别
+        if (containsAny(chain, "human-in-the-loop confirmation", "asking state", "need your approval")) {
+            return "上一步操作还在等你确认：请先在确认卡片中选择「允许本次」或「拒绝」，再继续提问";
+        }
         if (containsAny(chain, "额度", "欠费", "quota", "insufficient balance", "arrears",
                 "permissiondenied", "status 403")) {
             return "模型服务 Token 额度已用完（或账号欠费），请切换到其他可用模型，或联系服务方充值后重试";
@@ -260,8 +308,12 @@ public class SimpleHarnessActAgent {
      * <p>防腐层：隔离 SDK 内部结构变化对前端 API 协议的影响，同时支持扩展业务字段。
      * <p>采用 instanceof 模式匹配直接 downcast 到具体子类，显式调用子类 getter，
      * 避免反射带来的黑匣子开销与脆弱性。
+     *
+     * @param toolOutputs 本次请求内的工具输出累积器，以 toolCallId 为键；
+     *                    增量事件往里写，收尾事件取完即删
      */
-    private ChatStreamEvent toStreamEvent(AgentEvent event, String sessionId) {
+    private ChatStreamEvent toStreamEvent(AgentEvent event, String sessionId,
+                                          Map<String, StringBuilder> toolOutputs) {
         // 1. CustomEvent（如文件产物生成事件）
         if (event instanceof CustomEvent customEvent) {
             return handleCustomEvent(customEvent, sessionId);
@@ -290,7 +342,49 @@ public class SimpleHarnessActAgent {
                     .build();
         }
 
-        // 5. 其他 SDK 事件：保留原始类型信息，透传给前端按需消费
+        // 5. RequireUserConfirmEvent：人在回路——命中 ASK 规则的工具被标成 ASKING 后本轮已暂停，
+        //    只有把这些待确认项下发给前端，会话才有机会被 ConfirmResult 推下去
+        if (event instanceof RequireUserConfirmEvent confirmEvent) {
+            List<ConfirmRequest> requests = conversationContextService.toConfirmRequests(confirmEvent.getToolCalls());
+            log.info("【等待确认】replyId={}, 待确认 {} 条: {}", confirmEvent.getReplyId(), requests.size(),
+                    requests.stream().map(ConfirmRequest::getToolName).toList());
+            return ChatStreamEvent.builder()
+                    .type(MyAgentEvent.CONFIRM)
+                    .sessionId(sessionId)
+                    .confirmRequests(requests)
+                    .metadata(confirmEvent.getReplyId() == null
+                            ? Map.of() : Map.of("replyId", confirmEvent.getReplyId()))
+                    .build();
+        }
+
+        // 6. ToolResultTextDeltaEvent：工具输出增量，只用来攒摘要，不单独下发（卡片等收尾时一次性给出完整内容，
+        //    与历史加载那一份展示对齐）
+        if (event instanceof ToolResultTextDeltaEvent toolDelta) {
+            collectToolOutput(toolOutputs, toolDelta.getToolCallId(), toolDelta.getDelta());
+            return ChatStreamEvent.builder()
+                    .type(MyAgentEvent.OTHER)
+                    .sessionId(sessionId)
+                    .metadata(java.util.Map.of("rawType", String.valueOf(event.getType())))
+                    .build();
+        }
+
+        // 7. ToolResultEndEvent：一次工具调用收尾。下发名称/调用 ID/结果状态/输出摘要，前端把它折成工具调用痕迹，
+        //    这样不刷新页面也能看到本轮干了什么；历史加载侧走的是同一字段（见 MessageHistoryService）
+        if (event instanceof ToolResultEndEvent toolResultEnd) {
+            ToolCallVo toolCall = ToolCallVo.builder()
+                    .toolName(toolResultEnd.getToolCallName())
+                    .toolCallId(toolResultEnd.getToolCallId())
+                    .state(toolResultEnd.getState() == null ? null : toolResultEnd.getState().getValue())
+                    .summary(ToolCallVo.summarize(takeToolOutput(toolOutputs, toolResultEnd.getToolCallId())))
+                    .build();
+            return ChatStreamEvent.builder()
+                    .type(MyAgentEvent.TOOL)
+                    .sessionId(sessionId)
+                    .toolCalls(List.of(toolCall))
+                    .build();
+        }
+
+        // 8. 其他 SDK 事件：保留原始类型信息，透传给前端按需消费
         return ChatStreamEvent.builder()
                 .type(MyAgentEvent.OTHER)
                 .sessionId(sessionId)
@@ -347,6 +441,33 @@ public class SimpleHarnessActAgent {
                 .sessionId(sessionId)
                 .content(text)
                 .build();
+    }
+
+
+    /**
+     * 逐段攒下工具输出，供收尾事件算摘要。增量可能很多段，超上限后不再追写。
+     */
+    private static void collectToolOutput(Map<String, StringBuilder> toolOutputs, String toolCallId, String delta) {
+        if (toolCallId == null || toolCallId.isBlank() || delta == null || delta.isEmpty()) {
+            return;
+        }
+        StringBuilder buffer = toolOutputs.computeIfAbsent(toolCallId, key -> new StringBuilder());
+        synchronized (buffer) {
+            if (buffer.length() < TOOL_OUTPUT_BUFFER_LIMIT) {
+                buffer.append(delta);
+            }
+        }
+    }
+
+    /**
+     * 取走并移除某次调用的累积输出（一次调用只会收尾一次，不删会一直占着内存）。
+     */
+    private static String takeToolOutput(Map<String, StringBuilder> toolOutputs, String toolCallId) {
+        if (toolCallId == null) {
+            return "";
+        }
+        StringBuilder buffer = toolOutputs.remove(toolCallId);
+        return buffer == null ? "" : buffer.toString();
     }
 
 

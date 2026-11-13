@@ -4,6 +4,8 @@ import com.moli.agent.scope.common.base.SessionBase;
 import lombok.Data;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.List;
+
 @Data
 public class InConversationVo {
 
@@ -36,4 +38,13 @@ public class InConversationVo {
      * 为空时服务端回退 application-local.yml 的 llm.model 默认模型。
      */
     private String modelName;
+
+    /**
+     * 人对“待确认工具调用”的裁决（人在回路恢复入口）。
+     * <p>非空时本次请求不是一轮新对话，而是把上一轮被 ASK 规则暂停的会话推下去：
+     * 服务端拿 {@code toolCallId} 到会话上下文里找回那条 ASKING 工具调用，组装成 SDK 的
+     * {@code ConfirmResult} 下发，此时 {@code message} 不会被写进上下文（框架该分支不追加输入消息）。
+     * <p>只允许携带 ID 与裁决结果，工具入参一律以服务端上下文里的原始值为准。
+     */
+    private List<ConfirmDecision> confirmResults;
 }

@@ -36,6 +36,28 @@
             </el-collapse>
           </div>
           
+          <!-- 工具调用痕迹：后端把上下文里 role=TOOL 的结果消息折叠到这里，不再单独渲染成一个空白助手气泡 -->
+          <!-- 位置排在正文之前：推理 → 调工具 → 拿结果 → 给出回答，跟本轮实际发生的顺序一致 -->
+          <div v-if="message.toolCalls?.length" class="tool-call-section">
+            <el-collapse>
+              <el-collapse-item :title="`🔧 本轮调用了 ${message.toolCalls.length} 次工具`" name="tools">
+                <div
+                  v-for="item in message.toolCalls"
+                  :key="item.toolCallId"
+                  class="tool-call-item"
+                >
+                  <div class="tool-call-header">
+                    <span class="tool-call-name">{{ confirmToolLabel(item.toolName) }}</span>
+                    <span :class="['tool-call-state', item.state === 'success' ? 'ok' : 'warn']">
+                      {{ toolStateLabel(item.state) }}
+                    </span>
+                  </div>
+                  <div v-if="item.summary" class="tool-call-summary">{{ item.summary }}</div>
+                </div>
+              </el-collapse-item>
+            </el-collapse>
+          </div>
+          
           <!-- 文本阶段（出错时以告警样式展示失败原因） -->
           <div class="message-text" :class="{ 'message-error': message.error }" v-html="formatMessage(message.content)"></div>
           
@@ -50,6 +72,45 @@
             </el-button>
           </div>
           
+          <!-- 人在回路：命中 ASK 规则后 Agent 已带着这些调用暂停本轮，必须在这里裁决会话才能继续 -->
+          <div v-if="message.confirmRequests?.length" class="confirm-section">
+            <div class="confirm-tip">
+              <el-icon><Warning /></el-icon>
+              <span>以下操作需要你确认后才会执行</span>
+            </div>
+            <div
+              v-for="item in message.confirmRequests"
+              :key="item.toolCallId"
+              class="confirm-item"
+            >
+              <div class="confirm-item-header">
+                <span class="confirm-tool-name">{{ confirmToolLabel(item.toolName) }}</span>
+                <!-- 已裁决的条目不再渲染按钮：同一个待确认调用只认一次确认，重复提交会被服务端拒掉 -->
+                <span v-if="item.decision" class="confirm-decided">
+                  {{ item.decision === 'allow' ? '已允许本次' : '已拒绝' }}
+                </span>
+              </div>
+              <div v-if="item.argumentSummary" class="confirm-args">{{ item.argumentSummary }}</div>
+              <div v-if="!item.decision" class="confirm-actions">
+                <el-button
+                  type="success"
+                  size="small"
+                  :disabled="loading"
+                  @click="handleConfirm(index, item.toolCallId, true)"
+                >
+                  允许本次
+                </el-button>
+                <el-button
+                  size="small"
+                  :disabled="loading"
+                  @click="handleConfirm(index, item.toolCallId, false)"
+                >
+                  拒绝
+                </el-button>
+              </div>
+            </div>
+          </div>
+
           <!-- 消息操作按钮 -->
           <div class="message-actions" v-if="message.role === 'assistant'">
             <el-button size="small" text @click="handleCopy(getFullContent(message))">
@@ -192,7 +253,8 @@ import {
   Document,
   Download,
   Plus,
-  ArrowDown
+  ArrowDown,
+  Warning
 } from '@element-plus/icons-vue'
 
 // 初始化 markdown-it 实例
@@ -229,7 +291,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['send', 'copy', 'regenerate', 'stop', 'download-file', 'new-conversation', 'change-model'])
+const emit = defineEmits(['send', 'copy', 'regenerate', 'stop', 'download-file', 'new-conversation', 'change-model', 'confirm'])
 
 const inputMessage = ref('')
 const messageListRef = ref(null)
@@ -334,6 +396,48 @@ const handleStop = () => {
 // 重新生成
 const handleRegenerate = (index) => {
   emit('regenerate', index)
+}
+
+// 待确认工具名的可读化：卡片要让用户看懂“要动我机器上的什么”，而不是一串下划线标识
+// 除了自己的两个工具，harness 还会自动注册一批平台工具（execute / read_file / write_file 等），
+// 不补映射的话确认卡片与工具调用痕迹上会直接显示裸英文标识
+const confirmToolLabel = (toolName) => {
+  const labels = {
+    read_path_file_names: '读取目录下的文件列表',
+    execute_shell_command: '执行 Shell 命令',
+    query_city_weather: '查询城市天气',
+    execute: '执行 Shell 命令（内置）',
+    read_file: '读取文件内容',
+    list_files: '列出文件',
+    grep_files: '搜索文件内容',
+    glob_files: '按通配符查找文件',
+    write_file: '新建/覆盖文件',
+    edit_file: '编辑文件',
+    web_fetch: '抓取网页',
+    web_search: '联网搜索',
+    memory_search: '检索长期记忆',
+    memory_get: '读取记忆文件',
+    memory_save: '写入长期记忆',
+    session_search: '检索历史会话'
+  }
+  return labels[toolName] || toolName || '未知操作'
+}
+
+// 工具结果状态的可读化：ToolResultState 一共 success/error/denied/interrupted/running 五个取值
+const toolStateLabel = (state) => {
+  const labels = {
+    success: '成功',
+    error: '失败',
+    denied: '已拒绝',
+    interrupted: '已中断',
+    running: '执行中'
+  }
+  return labels[state] || state || '状态未知'
+}
+
+// 用户对单个待确认调用做出裁决，交由父组件发起恢复流
+const handleConfirm = (index, toolCallId, confirmed) => {
+  emit('confirm', { index, toolCallId, confirmed })
 }
 
 // 距底部多少像素内算「已贴底」：留出容差，避免平滑滚动过程和小数像素高度抖动
@@ -525,8 +629,10 @@ defineExpose({
 }
 
 /* 推理阶段样式 */
+/* 与下一块（工具调用卡或正文）的间距：相邻块级元素的上下 margin 会合并取最大值，
+   因此这里降到 8px 才能真正紧凑，单改 .tool-call-section 的 margin-top 不生效 */
 .thinking-section {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .thinking-section :deep(.el-collapse) {
@@ -772,6 +878,133 @@ defineExpose({
 
 .message-actions {
   margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+/* 工具调用痕迹（历史消息里折叠过来的工具结果）：夹在推理与正文之间，上下都要留出间距 */
+.tool-call-section {
+  margin: 8px 0 10px;
+  padding: 6px 12px 0;
+  background: #f5f7fa;
+  border: 1px solid #dbe2ea;
+  border-radius: 8px;
+}
+
+.tool-call-item {
+  padding: 6px 0;
+}
+
+/* 第二条起加分隔线；同 confirm-item，不能用 :first-of-type */
+.tool-call-item + .tool-call-item {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(92, 74, 66, 0.15);
+}
+
+.tool-call-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tool-call-name {
+  color: #5C4A42;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tool-call-state {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.tool-call-state.ok {
+  color: #15803d;
+}
+
+.tool-call-state.warn {
+  color: #b45309;
+}
+
+/* 工具输出可能很长，限高后内部滚动，不把气泡撑爆 */
+.tool-call-summary {
+  margin-top: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 6px;
+  color: #4b5563;
+  font-size: 12px;
+  font-family: Consolas, Monaco, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 人在回路确认卡片 */
+.confirm-section {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+}
+
+.confirm-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.confirm-item {
+  margin-top: 8px;
+}
+
+/* 第二条起加分隔线；不能用 :first-of-type，子元素全是 div 时它匹配不到 confirm-item */
+.confirm-item + .confirm-item {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(180, 83, 9, 0.2);
+}
+
+.confirm-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.confirm-tool-name {
+  color: #78350f;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.confirm-decided {
+  color: #64748b;
+  font-size: 12px;
+}
+
+/* 工具入参原文（命令 / 路径）等宽展示，用户能看清具体要动哪个目录 */
+.confirm-args {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 6px;
+  color: #4b5563;
+  font-size: 12px;
+  font-family: Consolas, Monaco, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.confirm-actions {
+  margin-top: 10px;
   display: flex;
   gap: 8px;
 }

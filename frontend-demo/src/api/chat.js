@@ -46,6 +46,8 @@ function parseErrorPayload(text, status) {
  * @param {string} [data.modelName] - 本次对话使用的模型标识（下拉选择值）；为空则由服务端使用默认模型
  * @param {boolean} [data.regenerate] - 是否为重新生成：服务端会先把该轮上下文回滚再重放本条消息
  * @param {string} [data.regenerateMessageId] - 要重放的那条用户消息 ID，服务端按它精确定位回滚点
+ * @param {Array} [data.confirmResults] - 人在回路裁决结果 [{ toolCallId, confirmed, reason }]；
+ *   非空时本次请求不是一轮新提问，而是把上一轮被暂停的会话推下去
  * @param {Function} onEvent - 事件回调函数
  * @returns {Function} 取消函数
  */
@@ -93,7 +95,12 @@ export function sendChatMessageStream(endpoint, data, onEvent) {
       // 重新生成标志：服务端据此回滚上下文，避免同一条消息在上下文里重复累积
       regenerate: !!data.regenerate,
       // 定位回滚点的目标消息 ID（历史消息自带、实时对话由 DONE 事件回传）
-      regenerateMessageId: data.regenerateMessageId || ''
+      regenerateMessageId: data.regenerateMessageId || '',
+      // 人在回路：只上送“哪个调用、允许还是拒绝”，工具入参由服务端从上下文里取原始值，
+      // 避免确认卡片变成改命令的入口。为空时不能带该字段，否则服务端会误走恢复分支
+      confirmResults: Array.isArray(data.confirmResults) && data.confirmResults.length
+        ? data.confirmResults
+        : undefined
     }),
     signal: controller.signal
   })
