@@ -30,7 +30,7 @@ public class CommonWebConfig implements WebMvcConfigurer {
 
     /**
      * 注册登录拦截器：拦截路径 /**，排除 /health 与免登录端点。
-     * 说明：/auth/login、/auth/logout 必须排除，否则无法完成登录；/auth/currentUser 仍需鉴权。
+     * 说明：/auth/register、/auth/login、/auth/logout 必须排除，否则无法完成注册登录；/auth/currentUser 仍需鉴权。
      */
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
@@ -38,6 +38,7 @@ public class CommonWebConfig implements WebMvcConfigurer {
                 .addPathPatterns("/**")
                 .excludePathPatterns(
                         "/health",
+                        "/auth/register",
                         "/auth/login",
                         "/auth/logout",
                         "/error"

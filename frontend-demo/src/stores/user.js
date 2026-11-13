@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { login as loginApi, logout as logoutApi, getCurrentUser } from '@/api/auth'
+import { register as registerApi, login as loginApi, logout as logoutApi, getCurrentUser } from '@/api/auth'
 
 const TOKEN_KEY = 'token'
 const USER_KEY = 'userInfo'
@@ -28,6 +28,20 @@ export const useUserStore = defineStore('user', () => {
     } else {
       localStorage.removeItem(USER_KEY)
     }
+  }
+
+  /**
+   * 注册：登录号仅支持手机号 / 邮箱；后端注册成功即签发 token，保存后自动登录
+   */
+  async function register(payload) {
+    const data = await registerApi(payload)
+    setToken(data.token)
+    setUserInfo({
+      userId: data.userId,
+      loginAcct: data.loginAcct,
+      nickName: data.nickName
+    })
+    return data
   }
 
   /**
@@ -85,6 +99,7 @@ export const useUserStore = defineStore('user', () => {
   return {
     token,
     userInfo,
+    register,
     login,
     logout,
     fetchCurrentUser,

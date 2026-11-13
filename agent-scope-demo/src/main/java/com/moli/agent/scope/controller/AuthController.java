@@ -4,6 +4,7 @@ import com.moli.agent.scope.common.base.ApiResult;
 import com.moli.agent.scope.common.security.LoginUser;
 import com.moli.agent.scope.common.security.UserContext;
 import com.moli.agent.scope.common.vo.InLoginVo;
+import com.moli.agent.scope.common.vo.InRegisterVo;
 import com.moli.agent.scope.common.vo.LoginResultVo;
 import com.moli.agent.scope.service.AuthService;
 import lombok.RequiredArgsConstructor;
@@ -14,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 登录控制器：登录 / 登出 / 当前登录用户
+ * 登录控制器：注册 / 登录 / 登出 / 当前登录用户
  *
  * @author moli
  */
@@ -24,6 +25,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final AuthService authService;
+
+    /**
+     * 注册：登录号仅支持手机号 / 邮箱，注册成功后直接返回 token 实现自动登录
+     */
+    @PostMapping("/register")
+    public ApiResult<LoginResultVo> register(@RequestBody InRegisterVo registerVo) {
+        return authService.register(registerVo);
+    }
 
     /**
      * 登录：账号密码换取 JWT token

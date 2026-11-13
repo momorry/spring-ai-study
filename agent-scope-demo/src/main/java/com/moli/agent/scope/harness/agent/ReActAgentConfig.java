@@ -97,6 +97,8 @@ public class ReActAgentConfig {
                 PermissionContextState.builder()
                         .mode(PermissionMode.DEFAULT)
                         .addAllowRule(WeatherTool.TOOL_NAME, allowCall(WeatherTool.TOOL_NAME))
+                        .addAllowRule("web_search", allowCall("web_search"))
+                        .addAllowRule("web_fetch", allowCall("web_search"))
                         .build();
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(new WeatherTool());
