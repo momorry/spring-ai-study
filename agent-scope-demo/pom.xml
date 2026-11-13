@@ -86,6 +86,16 @@
             <version>2.0.4</version>
             <scope>compile</scope>
         </dependency>
+
+        <!-- 阿里云 OSS SDK：只用于产物交付出口（ChatArtifactDeliveryTarget → OssArtifactStorage）。
+             不引入 agentscope-extensions-oss：那个扩展提供的是 OssBaseStore/OssSnapshotSpec（把 OSS 当 KV / 快照存储），
+             而 OSS 当 KV 用是官方明确的反模式（高频小读写延迟与按请求计费都会失控）；
+             产物是一次性完整对象，用裸 SDK 的 PutObject/GetObject 就够。 -->
+        <dependency>
+            <groupId>com.aliyun.oss</groupId>
+            <artifactId>aliyun-sdk-oss</artifactId>
+            <version>3.18.5</version>
+        </dependency>
         
         <!-- Database: Spring DataSource + MyBatis-Plus -->
         <dependency>

@@ -24,7 +24,7 @@ import { ref, watch, inject, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ChatBox from '@/components/ChatBox.vue'
-import { sendChatMessageStream, stopConversation, loadConversationHistory, downloadFileByMessageId } from '@/api/chat'
+import { sendChatMessageStream, stopConversation, loadConversationHistory, downloadArtifact } from '@/api/chat'
 import { listLlmModels } from '@/api/llmModel'
 import { useUserStore } from '@/stores/user'
 
@@ -132,7 +132,8 @@ async function loadHistoryFromBackend(sid) {
         content: msg.content || '',
         thinking: msg.thinking || null,
         timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
-        fileInfo: msg.fileInfo || null,
+        // 本轮交付的产物（一条回答可以有好几个），字段与实时流下发的完全一致，复用同一个渲染分支
+        artifacts: Array.isArray(msg.artifacts) && msg.artifacts.length ? msg.artifacts : null,
         // 本轮调用过的工具（后端把 role=TOOL 的消息折叠到这里，不再单独成一条气泡）
         toolCalls: Array.isArray(msg.toolCalls) && msg.toolCalls.length
           ? msg.toolCalls
@@ -221,9 +222,9 @@ const parseStreamEvent = (event) => {
     return { type: 'result', thinking: event.thinking || '', text: event.content || '' }
   }
   
-  // 文件产物已生成
+  // 产物已交付：一个 FILE 事件可能带好几个文件，整组一起下发
   if (eventType === 'file') {
-    return { type: 'file', fileInfo: event.fileInfo || null }
+    return { type: 'file', artifacts: Array.isArray(event.artifacts) ? event.artifacts : [] }
   }
 
   // 人在回路：工具调用等待确认，本轮已暂停（不处理卡片会话会一直卡在 ASKING）
@@ -299,6 +300,23 @@ const appendToolCalls = (index, incoming) => {
   target.toolCalls = merged
 }
 
+// 把实时流下发的产物追加到这条气泡上，与 toolCalls 同一套路：按 artifactId 去重，
+// 同一个产物就算被重发一次（恢复流会复用同一条气泡）也不会在上面列两遍
+const appendArtifacts = (index, incoming) => {
+  const target = messages.value[index]
+  if (!target) return
+  const merged = Array.isArray(target.artifacts) ? [...target.artifacts] : []
+  incoming.forEach(item => {
+    const at = merged.findIndex(existing => existing.artifactId === item.artifactId)
+    if (at >= 0) {
+      merged[at] = { ...merged[at], ...item }
+    } else {
+      merged.push(item)
+    }
+  })
+  target.artifacts = merged
+}
+
 // 统一的流式消费入口：正常发送、重新生成、确认恢复三条路径走的是同一份事件协议，
 // 差异只在收尾提示，所以只留一份解析与写入逻辑（否则新加一种事件时很容易只改其中一条路径）。
 // request 只写业务字段，公共字段（sessionId/userId/modelName）在此统一补齐；
@@ -362,9 +380,9 @@ const streamIntoMessage = (request, index, { onCompleted, errorTip = '发送消�
           textContent = parsed.text
           messages.value[index].content = textContent
         }
-      } else if (parsed.type === 'file' && parsed.fileInfo) {
-        // 文件产物已生成，附加到消息上
-        messages.value[index].fileInfo = parsed.fileInfo
+      } else if (parsed.type === 'file' && parsed.artifacts.length) {
+        // 产物已交付：卡片挂到这条回答上（模型被要求静默交付、不会在正文里提它，前端不接就彻底看不见了）
+        appendArtifacts(index, parsed.artifacts)
       } else if (parsed.type === 'confirm' && parsed.confirmRequests.length) {
         // 人在回路：Agent 已带着这些工具调用暂停本轮，把待确认项挂在这条气泡上等用户裁决；
         // 不处理的话会话会停在 ASKING，之后发任何新消息都只会拿到一个报错
@@ -464,28 +482,20 @@ const handleCopy = (content) => {
   console.log('复制内容:', content)
 }
 
-// 下载文件
-const handleDownloadFile = async (message) => {
-  const fileInfo = message?.fileInfo
-  if (!fileInfo) {
-    ElMessage.error('没有可下载的文件')
-    return
-  }
-  
-  // 优先使用 fileInfo 中的 messageId，其次使用 message.id
-  const messageId = fileInfo.messageId || message?.id
-  if (!messageId) {
-    ElMessage.error('无法获取消息ID')
+// 下载单个产物：凭 artifactId 走服务端（它会先校验这个产物是不是当前用户的）
+const handleDownloadFile = async (artifact) => {
+  if (!artifact?.artifactId) {
+    ElMessage.error('产物信息不完整，无法下载')
     return
   }
   
   try {
-    const blob = await downloadFileByMessageId(messageId)
+    const blob = await downloadArtifact(artifact.artifactId)
     // 创建临时下载链接
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = fileInfo?.fileName || 'download'
+    link.download = artifact.fileName || 'download'
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -493,7 +503,8 @@ const handleDownloadFile = async (message) => {
     ElMessage.success('下载成功')
   } catch (error) {
     console.error('下载失败:', error)
-    ElMessage.error('下载失败，请稍后重试')
+    // 产物被同名覆盖过、对象被清理过都会走到这里（服务端给 404），提示往回指而不是只说“稍后重试”
+    ElMessage.error('下载失败，产物可能已被新文件覆盖或已被清理，请重新生成后再试')
   }
 }
 

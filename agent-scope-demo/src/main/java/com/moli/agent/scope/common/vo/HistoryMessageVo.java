@@ -44,9 +44,12 @@ public class HistoryMessageVo {
     private String timestamp;
 
     /**
-     * 文件产物信息（如果有）
+     * 该条回答交付的产物（如果有）。
+     * <p>一次交付就出一个，模型一轮交好几个不能只留一个，所以是列表；
+     * 数据从 m_chat_artifact 按 message_id 查出后拼装，实时流下发的 {@code ChatStreamEvent#artifacts}
+     * 是同一份结构，刷新前后看到的才一致。
      */
-    private FileInfo fileInfo;
+    private List<FileInfo> artifacts;
 
     /**
      * 等待用户确认的工具调用（人在回路），只出现在最后一条 assistant 消息上。

@@ -63,32 +63,47 @@ create index idx_cs_user on m_chat_session (user_id);
 
 
 -- ============================================================
--- 消息文件产物关联表
--- 说明：记录每次对话产生的文件产物，关联到具体的消息（messageId）；
---      加载历史消息时，根据 messageId 查询并附加文件信息到对应的 assistant 消息。
+-- 对话产物台账
+-- 说明：本表是产物元数据的【唯一权威来源】——可索引、可分页、可鉴权、可回收；产物字节落在对象存储（OSS），
+--      表里只存 object_key，绝不存服务器绝对路径（换机器/多副本即失效）也不存预签名 URL（会过期、绕过鉴权）。
+--      前端拿到的产物卡片是按 message_id 从本表查出来「拼装」的展示投影，不写进消息本身：
+--      消息只存在于 agentscope_sessions 的会话大 JSON 里，天生不可索引，且会被压缩/重新生成改写，做不了台账。
+-- 两个设计要点：
+--   一、message_id 可为空。deliver_artifact 在本轮答完之前执行，那时最终 assistant 消息还不存在，
+--       先按 (user_id, session_id) 落库，等本轮结束时回填；回填不上（本轮被中断）产物照样能列出、能下载。
+--   二、message_id 不唯一。一轮可以交付多个文件（报告 + 图表 + 归档），唯一索引会让第二条落库直接失败。
+--      另设 status 状态位，支撑「同名覆盖」与「会话删除后回收对象」。
 -- ============================================================
-create table m_chat_message_file
+create table m_chat_artifact
 (
-    id           bigint primary key auto_increment comment '主键',
-    user_id      bigint                   not null comment '所属用户ID（关联 m_user.id）',
+    id           bigint primary key auto_increment comment '产物ID（对外唯一标识，下载接口的入参）',
+    user_id      bigint                   not null comment '所属用户ID（关联 m_user.id，归属与鉴权依据）',
     session_id   varchar(64)              not null comment 'AgentScope 会话ID',
-    message_id   varchar(64)              not null comment '消息ID（关联消息的 id 字段）',
-    file_name    varchar(256)             not null comment '文件名称（含扩展名）',
-    file_url     varchar(512)             not null comment '文件访问地址（相对路径或完整 URL）',
+    message_id   varchar(64)              null comment '关联消息ID（Msg.getId()）；交付时机取不到，由本轮结束时回填',
+    file_name    varchar(256)             not null comment '产物文件名（含扩展名，下载时的展示名）',
+    storage_type varchar(16) default 'LOCAL' not null comment '存储后端：OSS-对象存储, LOCAL-本地目录（开发兜底）',
+    object_key   varchar(512)             not null comment '存储 key（相对 bucket 根 / 相对本地根目录），绝不写绝对路径',
+    source_path  varchar(512)             null comment '产物在 Agent 工作区中的原始路径（deliver_artifact 的 filePath，排障用）',
     file_size    bigint                   null comment '文件大小（字节）',
-    file_type    varchar(64)              null comment '文件类型 / MIME（如 text/plain）',
+    content_type varchar(128)             null comment 'MIME 类型（如 text/html）',
+    description  varchar(512)             null comment '模型填写的产物说明',
+    status       varchar(16) default 'ACTIVE' not null comment '状态：ACTIVE-可用, SUPERSEDED-被同名新产物覆盖, DELETED-已删除',
     create_by    varchar(32)              null comment '创建人',
     create_time  datetime                 null comment '创建时间',
     update_by    varchar(32)              null comment '更新人',
     update_time  datetime                 null comment '更新时间'
-) comment '消息文件产物关联表';
+) comment '对话产物台账（权威索引）';
 
--- 按消息ID查文件（精确匹配）
-create unique index idx_mf_message on m_chat_message_file (message_id);
--- 按会话查文件
-create index idx_mf_session on m_chat_message_file (session_id);
--- 按用户查文件
-create index idx_mf_user on m_chat_message_file (user_id);
+-- 一个对象只能被一条台账引用（key 含 uuid，不会误伤；防重复插入）
+create unique index uq_art_object on m_chat_artifact (object_key);
+-- ★ 跨会话列出「我的所有产物」+ 按时间倒序分页
+create index idx_art_user_time on m_chat_artifact (user_id, create_time);
+-- 会话内列出产物、以及 messageId 回填时定位本轮未绑定产物
+create index idx_art_session on m_chat_artifact (session_id, create_time);
+-- 历史消息按 messageId 批量挂产物（普通索引，一条消息可对应多行）
+create index idx_art_message on m_chat_artifact (message_id);
+-- 同名冲突检测（deliver_artifact 的 force=false 语义）
+create index idx_art_name on m_chat_artifact (user_id, session_id, file_name, status);
 
 
 -- ============================================================

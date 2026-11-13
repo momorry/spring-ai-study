@@ -1,7 +1,7 @@
 package com.moli.agent.scope.service;
 
-import com.moli.agent.scope.common.dao.entity.MChatMessageFile;
-import com.moli.agent.scope.common.dao.manager.MChatMessageFileManager;
+import com.moli.agent.scope.common.dao.entity.MChatArtifact;
+import com.moli.agent.scope.common.dao.manager.MChatArtifactManager;
 import com.moli.agent.scope.common.vo.ConfirmRequest;
 import com.moli.agent.scope.common.vo.FileInfo;
 import com.moli.agent.scope.common.vo.HistoryMessageVo;
@@ -18,7 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Slf4j
@@ -35,10 +37,11 @@ public class MessageHistoryService {
     private final MysqlAgentStateStore agentStateStore;
 
     /**
-     * 消息文件产物关联表（m_chat_message_file）。
-     * 记录每次对话产生的文件产物，加载历史消息时根据 sessionId 查询并附加文件信息。
+     * 对话产物台账（m_chat_artifact）。
+     * <p>加载历史消息时按 messageId 批量查出本轮交付的产物，挂到对应回答上；
+     * 与流式下发那一份卡片走的是同一个转换（{@link FileInfo#from}），刷新前后才是同一个东西。
      */
-    private final MChatMessageFileManager messageFileManager;
+    private final MChatArtifactManager artifactManager;
 
     /**
      * 会话上下文读侧（只读部分）：从 ASKING 工具调用恢复人在回路的待确认卡片。
@@ -56,7 +59,7 @@ public class MessageHistoryService {
         log.info("加载会话历史: userId={}, sessionId={}", userId, sessionId);
 
         List<HistoryMessageVo> result = new ArrayList<>();
-        // 文件产物是按 Msg.getId() 关联的，所以每条 assistant 消息都要登记「自己属于哪个气泡 + 自己的 messageId」；
+        // 产物是按 message_id 关联的，所以每条 assistant 消息都要登记「自己属于哪个气泡 + 自己的 messageId」；
         // 一轮里的多条 assistant 消息会被合并成同一个气泡，靠这两个平行数组才能把产物挂回正确的气泡
         List<String> assistantMessageIds = new ArrayList<>();
         List<Integer> assistantIndices = new ArrayList<>();
@@ -122,33 +125,25 @@ public class MessageHistoryService {
                 }
             }
 
-            // 批量查询文件产物
+            // 批量查产物：一条回答可能交付了多个文件，按 messageId 分组后整组挂上去
             if (!assistantMessageIds.isEmpty()) {
-                List<MChatMessageFile> fileRecords = messageFileManager.listByMessageIds(assistantMessageIds);
-                // 构建 messageId -> fileInfo 的映射
-                java.util.Map<String, FileInfo> fileInfoMap = new java.util.HashMap<>();
-                for (MChatMessageFile fileRecord : fileRecords) {
-                    FileInfo fileInfo = FileInfo.builder()
-                            .fileName(fileRecord.getFileName())
-                            .fileUrl(fileRecord.getFileUrl())
-                            .fileSize(fileRecord.getFileSize())
-                            .fileType(fileRecord.getFileType())
-                            // 合并后的气泡 id 认的是最后一条回答，产物可能出自本轮更早的那条消息，
-                            // 所以下载要按这里回传的原始 messageId 找，不能拿气泡 id 去猜
-                            .messageId(fileRecord.getMessageId())
-                            .build();
-                    fileInfoMap.put(fileRecord.getMessageId(), fileInfo);
+                Map<String, List<FileInfo>> artifactsByMessage = new HashMap<>();
+                // listByMessageIds 已按创建时间升序，分组后组内顺序不变，前端不必再排
+                for (MChatArtifact artifact : artifactManager.listByMessageIds(assistantMessageIds)) {
+                    artifactsByMessage.computeIfAbsent(artifact.getMessageId(), key -> new ArrayList<>())
+                            .add(FileInfo.from(artifact));
                 }
 
-                // 将文件产物信息附加到对应的 assistant 消息上
+                // 将产物附加到对应的 assistant 消息上：合并后的气泡 id 认的是最后一条回答，
+                // 产物可能出自本轮更早的那条消息，所以按两个平行数组逐条对位，而不是只认气泡自己那条
                 for (int i = 0; i < assistantIndices.size(); i++) {
                     int msgIndex = assistantIndices.get(i);
                     String messageId = assistantMessageIds.get(i);
-                    FileInfo fileInfo = fileInfoMap.get(messageId);
-                    if (fileInfo != null) {
-                        result.get(msgIndex).setFileInfo(fileInfo);
-                        log.debug("已将文件产物 {} 附加到 messageId={} 的 assistant 消息",
-                                fileInfo.getFileName(), messageId);
+                    List<FileInfo> artifacts = artifactsByMessage.get(messageId);
+                    if (artifacts != null && !artifacts.isEmpty()) {
+                        result.get(msgIndex).setArtifacts(artifacts);
+                        log.debug("已将 {} 个产物附加到 messageId={} 的 assistant 消息",
+                                artifacts.size(), messageId);
                     }
                 }
             }

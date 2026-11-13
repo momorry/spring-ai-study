@@ -58,8 +58,9 @@ public class ConversationContextService {
      * <p>因为所有校验与定位都排在内存修改与回写之前，抛异常时数据库一个字节都没改，
      * 不会留下「回滚了一半」的中间状态；此时本轮对话尚未进入 Agent，框架的
      * {@code agentscope_sessions} 也不会多出只有 user 没有 assistant 的半截轮次。
-     * <p>被回滚的旧回答若在 m_chat_message_file 留有产物记录，这里不删除：
-     * 记录保留便于审计与找回，代价是历史加载时那条已不存在的答案不会再挂上附件。
+     * <p>被回滚的旧回答若在 m_chat_artifact 留有产物台账，这里不删除：对象与记录保留便于审计与找回，
+     * 代价是历史加载时那条已不存在的答案不会再挂上附件（按 messageId 查不到了），
+     * 要彻底闭这个环需在回滚时把该轮产物置为 SUPERSEDED 或直接删行，当前未引入。
      * <p>并发前提：前端重发前已 abort 旧流并调用过 /agent/conversation/stop，
      * 因此正常不会与上一轮的收尾写入相撞。若旧轮次仍在本次截断之后才落库，
      * 它的写入会覆盖回滚结果（重复消息重现），此时靠下一次重新生成的回滚收敛；
@@ -172,40 +173,6 @@ public class ConversationContextService {
                     .toList();
         }
         return List.of();
-    }
-
-    /**
-     * 会话上下文里最后一条用户提问的原文。
-     * <p>人在回路恢复那次调用只带裁决 metadata、不带文本（框架也不会把它追加进上下文），
-     * 因此产物中间件那一轮拿不到提问原文，写出的产物会缺 [用户] 那一行，这里按上下文补回来。
-     * <p>只读不写。多一次状态读取可以接受：确认恢复是用户点一次才发生一次的低频路径。
-     *
-     * @param userId    用户ID
-     * @param sessionId 会话ID
-     * @return 提问原文；无会话状态或上下文里没有带文本的用户消息时返回空串
-     */
-    public String lastUserMessageText(String userId, String sessionId) {
-        if (StringUtils.isBlank(sessionId)) {
-            return "";
-        }
-        VersionedState<AgentState> versioned = agentStateStore.getVersioned(
-                userId, sessionId, STATE_KEY_AGENT, AgentState.class);
-        if (!versioned.isPresent() || versioned.value() == null) {
-            return "";
-        }
-        List<Msg> context = versioned.value().getContext();
-        for (int i = context.size() - 1; i >= 0; i--) {
-            Msg msg = context.get(i);
-            if (msg == null || msg.getRole() != MsgRole.USER) {
-                continue;
-            }
-            // 确认恢复时框架会追加一条只带 metadata 的 USER 消息，文本为空则继续往前找
-            String text = StringUtils.trimToEmpty(msg.getTextContent());
-            if (!text.isEmpty()) {
-                return text;
-            }
-        }
-        return "";
     }
 
     /**

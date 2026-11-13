@@ -39,8 +39,12 @@ public class ChatStreamEvent {
     /** 推理过程（result 阶段） */
     private String thinking;
 
-    /** 文件产物信息（file 阶段） */
-    private FileInfo fileInfo;
+    /**
+     * 本轮新交付的产物（file 阶段）。
+     * <p>一次 {@code deliver_artifact} 就可能出一个，一轮里模型可以连交好几个（报告 + 图表 + 归档），
+     * 所以是列表；与历史加载侧的 {@code HistoryMessageVo#artifacts} 是同一份结构，刷新前后才对得上。
+     */
+    private List<FileInfo> artifacts;
 
     /** 通用扩展字段（token 用量、耗时统计等） */
     private Map<String, Object> metadata;

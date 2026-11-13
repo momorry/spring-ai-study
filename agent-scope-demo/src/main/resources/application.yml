@@ -23,6 +23,26 @@ agent:
     # 避免前端连接一直挂着、界面卡在 loading。若常用工具执行耗时较长，可调大此值
     idle-timeout-seconds: 300
 
+  # 对话产物：字节落对象存储（或本地目录），台账落 MySQL 的 m_chat_artifact
+  artifact:
+    # 默认 oss：产物只存在于当前实例盘上的话，多副本/重启后下载就断了，所以生产口径直接当默认。
+    # 本地想用目录：设环境变量 AGENT_ARTIFACT_STORAGE=local（或在 application-local.yml 里覆盖本项）。
+    storage: ${AGENT_ARTIFACT_STORAGE:oss}
+    # 单个产物上限（MB）：deliver_artifact 是将整个文件读成 byte[] 再交接的，超限直接拒绝交付
+    max-size-mb: 50
+    local:
+      # 本地产物根目录，m_chat_artifact.object_key 相对它解析。存量 ./output 里的旧产物不搬迁，
+      # 新链路的台账只记自己写出去的文件，旧目录留着仅供人工查阅
+      root: ./output
+    oss:
+      # 只在 storage=oss 时才会被读取；四项缺任意一项即启动失败（见 OssArtifactStorage 构造校验）
+      endpoint: ${OSS_ENDPOINT:}
+      bucket: ${OSS_BUCKET:}
+      access-key-id: ${OSS_ACCESS_KEY_ID:}
+      access-key-secret: ${OSS_ACCESS_KEY_SECRET:}
+      # key 前缀，不写进 object_key（表里存的是不带前缀的逻辑 key）；用于同一 bucket 内隔离与按前缀配生命周期规则
+      key-prefix: artifacts/
+
 # AgentScope 会话状态 MySQL 持久化（agentscope-extensions-mysql）
 agentscope:
   state-store:

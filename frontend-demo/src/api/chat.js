@@ -321,31 +321,21 @@ export function sendStreamChatMessage(endpoint, data, onMessage, onError) {
   return () => controller.abort()
 }
 
-// ==================== 文件产物相关 API ====================
+// ==================== 产物相关 API ====================
 
 /**
- * 根据消息ID下载文件产物
- * @param {string} messageId - 消息ID
+ * 按产物ID下载
+ * @param {number} artifactId - 产物ID（后端 m_chat_artifact 主键，随 FILE 事件与历史消息下发）
  * @returns {Promise<Blob>} 文件 Blob 数据
+ *
+ * 为什么不用 messageId 下载：一条回答可以交好几个文件，按消息只能取到一个；
+ * 而且服务端是按 artifactId 校验归属的，拿别人的消息ID 再也下不到对方的产物。
  */
-export function downloadFileByMessageId(messageId) {
+export function downloadArtifact(artifactId) {
   return request({
-    url: '/file/download',
+    url: '/artifact/download',
     method: 'get',
-    params: { messageId },
+    params: { artifactId },
     responseType: 'blob'  // 重要：指定响应类型为 blob
-  })
-}
-
-/**
- * 根据消息ID获取文件信息
- * @param {string} messageId - 消息ID
- * @returns {Promise<Object>} 文件信息
- */
-export function getFileInfoByMessageId(messageId) {
-  return request({
-    url: '/file/info',
-    method: 'get',
-    params: { messageId }
   })
 }

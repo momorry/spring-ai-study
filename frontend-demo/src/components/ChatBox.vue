@@ -61,12 +61,16 @@
           <!-- 文本阶段（出错时以告警样式展示失败原因） -->
           <div class="message-text" :class="{ 'message-error': message.error }" v-html="formatMessage(message.content)"></div>
           
-          <!-- 文件产物展示 -->
-          <div v-if="message.fileInfo" class="file-attachment">
+          <!-- 产物卡片：一轮可以交付多个文件（报告 + 图表 + 归档），逐个列出来，一个都不丢 -->
+          <div
+            v-for="artifact in message.artifacts"
+            :key="artifact.artifactId"
+            class="file-attachment"
+          >
             <el-icon><Document /></el-icon>
-            <span class="file-name">{{ message.fileInfo.fileName }}</span>
-            <span class="file-size" v-if="message.fileInfo.fileSize">({{ formatFileSize(message.fileInfo.fileSize) }})</span>
-            <el-button type="primary" link @click="handleDownloadFile(message)">
+            <span class="file-name">{{ artifact.fileName }}</span>
+            <span class="file-size" v-if="artifact.fileSize">({{ formatFileSize(artifact.fileSize) }})</span>
+            <el-button type="primary" link @click="handleDownloadFile(artifact)">
               <el-icon><Download /></el-icon>
               下载
             </el-button>
@@ -329,10 +333,10 @@ const formatFileSize = (bytes) => {
   return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + units[i]
 }
 
-// 下载文件
-const handleDownloadFile = (message) => {
-  // 触发下载事件，由父组件处理具体逻辑，传递完整的 message 对象
-  emit('download-file', message)
+// 下载单个产物：具体取哪个对象由父组件凭 artifactId 调接口，这里只把条目原样交上去
+// （不再交整条 message：按消息ID 下载只能取到一个文件，也绕不开服务端的归属校验）
+const handleDownloadFile = (artifact) => {
+  emit('download-file', artifact)
 }
 
 // 获取完整内容（包括推理过程）

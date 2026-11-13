@@ -2,9 +2,9 @@ spring:
   datasource:
     type: com.zaxxer.hikari.HikariDataSource
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://1/1?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&allowMultiQueries=true&useCursorFetch=true&rewriteBatchedStatements=true
+    url: jdbc:mysql://10.129.67.77:4000/iresearch_aid?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&allowMultiQueries=true&useCursorFetch=true&rewriteBatchedStatements=true
     username: iresearch_aid
-    password: 1
+    password: iresearch_aid@2024
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: GMT+8

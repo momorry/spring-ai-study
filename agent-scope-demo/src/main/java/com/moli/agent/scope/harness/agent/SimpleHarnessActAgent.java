@@ -2,7 +2,8 @@ package com.moli.agent.scope.harness.agent;
 
 import cn.hutool.json.JSONUtil;
 import com.moli.agent.scope.common.base.SessionBase;
-import com.moli.agent.scope.common.dao.manager.MChatMessageFileManager;
+import com.moli.agent.scope.common.dao.entity.MChatArtifact;
+import com.moli.agent.scope.common.dao.manager.MChatArtifactManager;
 import com.moli.agent.scope.common.dao.manager.MChatSessionManager;
 import com.moli.agent.scope.common.vo.ChatStreamEvent;
 import com.moli.agent.scope.common.enums.MyAgentEvent;
@@ -11,8 +12,8 @@ import com.moli.agent.scope.common.vo.ConfirmRequest;
 import com.moli.agent.scope.common.vo.FileInfo;
 import com.moli.agent.scope.common.vo.InConversationVo;
 import com.moli.agent.scope.common.vo.ToolCallVo;
+import com.moli.agent.scope.harness.artifact.ChatArtifactDeliveryTarget;
 import com.moli.agent.scope.harness.middleware.DynamicModelMiddleware;
-import com.moli.agent.scope.harness.middleware.FileGenMiddleware;
 import com.moli.agent.scope.service.ConversationContextService;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.*;
@@ -27,9 +28,12 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -68,10 +72,11 @@ public class SimpleHarnessActAgent {
     private final MChatSessionManager chatSessionManager;
 
     /**
-     * 消息文件产物关联表（m_chat_message_file）。
-     * 记录每次对话产生的文件产物，加载历史消息时根据 sessionId 查询并附加文件信息。
+     * 对话产物台账（m_chat_artifact）。
+     * <p>交付工具的结果事件里只有文本摘要、没有 artifactId，所以本轮刚交付了什么只能反查台账；
+     * 历史加载侧按 messageId 挂产物用的也是同一张表（见 MessageHistoryService）。
      */
-    private final MChatMessageFileManager messageFileManager;
+    private final MChatArtifactManager artifactManager;
 
     /**
      * 会话上下文写侧操作：重新生成前需要先把要重放的那一轮回滚掉（见 {@link ConversationContextService}）。
@@ -99,14 +104,11 @@ public class SimpleHarnessActAgent {
         // 二、该 ID 会随 DONE 事件回传前端，前端归到这条回答上，下次重新生成时原样带回
         String userMessageId = UUID.randomUUID().toString();
         UserMessage userMessage;
-        String resumeUserText = "";
         if (resumeByConfirm) {
             // 拿 toolCallId 到会话上下文里找回那条 ASKING 调用并组装 ConfirmResult（入参以服务端原始值为准），
             // 对不上当场抛 BizException：此时 SSE 尚未建连，前端走非 2xx 分支提示，不会把垃圾 metadata 下发给框架
             List<ConfirmResult> confirmResults = conversationContextService.buildConfirmResults(
                     userId, conversationVo.getSessionId(), confirmDecisions);
-            // 本次输入不带提问文本，产物中间件那一轮抽不到 [用户]，从上下文取回原提问随上下文下发
-            resumeUserText = conversationContextService.lastUserMessageText(userId, conversationVo.getSessionId());
             // 只挂 metadata、不带文本：框架在 ASKING 分支只读这条 metadata，不会把本次输入消息追加进上下文
             userMessage = UserMessage.builder()
                     .id(userMessageId)
@@ -151,9 +153,6 @@ public class SimpleHarnessActAgent {
         if (StringUtils.isNotBlank(conversationVo.getModelName())) {
             contextBuilder.put(DynamicModelMiddleware.MODEL_NAME_KEY, conversationVo.getModelName().trim());
         }
-        if (resumeByConfirm && StringUtils.isNotBlank(resumeUserText)) {
-            contextBuilder.put(FileGenMiddleware.CTX_KEY_RESUME_USER_TEXT, resumeUserText);
-        }
         RuntimeContext rc = contextBuilder.build();
 
         log.info("开始调用 ReAct Agent 流式接口...");
@@ -161,6 +160,10 @@ public class SimpleHarnessActAgent {
         // 工具输出按调用 ID 累积：ToolResultEndEvent 本身不带输出内容，摘要只能从 TOOL_RESULT_TEXT_DELTA 增量里攒。
         // 放在方法局部而不是字段：本 Service 是单例，共用会把其他请求的工具输出串进当前气泡
         Map<String, StringBuilder> toolOutputs = new ConcurrentHashMap<>();
+        // 本轮产物卡片的下发上下文，同理必须是每次调用各自一份
+        // 起始时间取在订阅之前：交付落库只会晚于它，不会漏掉本轮任何一个产物
+        ArtifactCardState artifactCards = new ArtifactCardState(
+                conversationVo.getUserId(), streamSessionId, LocalDateTime.now(), ConcurrentHashMap.newKeySet());
         // 关键修复：不在此处 subscribe()。streamEvents 返回的是冷流，
         // 若这里订阅一次、再把它返回给 Spring MVC 订阅一次，Agent 会被执行两遍（两次真实模型调用）。
         // 仅挂载日志算子后返回，由 MVC 订阅一次即可。
@@ -176,7 +179,8 @@ public class SimpleHarnessActAgent {
                         log.debug("【事件对象】{}", event);
                     }
                 })
-                .map(event -> toStreamEvent(event, streamSessionId, toolOutputs))
+                // flatMap 而非 map：一次交付工具的收尾除了工具调用痕迹本身，还要多下发一条产物卡片
+                .flatMap(event -> Flux.fromIterable(toStreamEvents(event, streamSessionId, toolOutputs, artifactCards)))
                 // 长时间无事件（模型卡死、工具 hang）→ TimeoutException，同样交给 onErrorResume 收敛
                 .timeout(Duration.ofSeconds(idleTimeoutSeconds))
                 // 关键：SSE 一旦建连（200 + text/event-stream），异常绝不能再以 error 信号抛出——
@@ -304,6 +308,70 @@ public class SimpleHarnessActAgent {
     }
 
     /**
+     * 一次 SDK 事件 → 零到多条下发事件。
+     * <p>主事件照旧由 {@link #toStreamEvent} 映射（每个事件至少产出一条，前端不会拿到空帧）；
+     * 交付工具收尾时额外补一条 FILE 产物卡片，排在主事件之后：先让用户看见这一步做了什么，再看见产物。
+     */
+    private List<ChatStreamEvent> toStreamEvents(AgentEvent event, String sessionId,
+                                                 Map<String, StringBuilder> toolOutputs,
+                                                 ArtifactCardState artifactCards) {
+        ChatStreamEvent primary = toStreamEvent(event, sessionId, toolOutputs);
+        List<FileInfo> delivered = newlyDeliveredArtifacts(event, artifactCards);
+        if (delivered.isEmpty()) {
+            return List.of(primary);
+        }
+        List<ChatStreamEvent> events = new ArrayList<>(2);
+        events.add(primary);
+        events.add(ChatStreamEvent.builder()
+                .type(MyAgentEvent.FILE)
+                .sessionId(sessionId)
+                .artifacts(delivered)
+                .build());
+        return events;
+    }
+
+    /**
+     * 本轮里“这次调用之后新交付”的产物，取过即记入已下发集合，避免重复发卡。
+     * <p>为什么不去解析工具返回的文本：{@code deliver_artifact} 的返回是给模型看的一句话摘要，
+     * 从里面抓 artifactId 等于把前端协议绑在了一句提示文案上；而且模型一轮可以交好几个文件，
+     * 一次收尾对不上具体是哪几个。台账在交付返回之前就已经落好，所以按「会话 + 本轮起始时间」反查最可靠。
+     * <p>也因此不需要判工具结果状态：交付真失败时压根没有新行，查出来就是空，自然不发卡片。
+     */
+    private List<FileInfo> newlyDeliveredArtifacts(AgentEvent event, ArtifactCardState artifactCards) {
+        if (!(event instanceof ToolResultEndEvent toolResultEnd)
+                || !ChatArtifactDeliveryTarget.DELIVER_TOOL_NAME.equals(toolResultEnd.getToolCallName())) {
+            return List.of();
+        }
+        List<FileInfo> fresh = new ArrayList<>();
+        try {
+            List<MChatArtifact> delivered = artifactManager.listSince(
+                    artifactCards.userId(), artifactCards.sessionId(), artifactCards.turnStart());
+            for (MChatArtifact artifact : delivered) {
+                if (artifact.getId() != null && artifactCards.emitted().add(artifact.getId())) {
+                    fresh.add(FileInfo.from(artifact));
+                }
+            }
+        } catch (Exception e) {
+            // 卡片只是展示用的投影：查失败不能把本轮回答一起拖挂，刷新后从历史加载仍能看见产物
+            log.warn("【产物卡片】本轮交付反查失败（不影响本次对话）: sessionId={}, {}",
+                    artifactCards.sessionId(), e.getMessage());
+        }
+        if (!fresh.isEmpty()) {
+            log.info("【产物卡片】本轮新下发 {} 个: {}", fresh.size(),
+                    fresh.stream().map(FileInfo::getFileName).toList());
+        }
+        return fresh;
+    }
+
+    /**
+     * 本次调用的产物卡片下发状态（每次调用各自一份，不能用字段：单例 Service 共用会把产物串到其他气泡）。
+     *
+     * @param emitted 已下发过的产物ID，兼作去重集
+     */
+    private record ArtifactCardState(Long userId, String sessionId, LocalDateTime turnStart, Set<Long> emitted) {
+    }
+
+    /**
      * 将 AgentScope SDK 的 AgentEvent 映射为自定义 ChatStreamEvent。
      * <p>防腐层：隔离 SDK 内部结构变化对前端 API 协议的影响，同时支持扩展业务字段。
      * <p>采用 instanceof 模式匹配直接 downcast 到具体子类，显式调用子类 getter，
@@ -395,38 +463,15 @@ public class SimpleHarnessActAgent {
     }
 
     /**
-     * 处理 CustomEvent：目前识别 file_generated（文件产物已生成）。
+     * 处理 CustomEvent：未识别的先透传原始类型，不强行编出一个业务事件。
+     * <p>产物卡片不在这里：产物由 {@link #newlyDeliveredArtifacts} 在交付工具收尾时从台账反查下发，
+     * 不依赖中间件往事件流里塞自定义事件（消息流会被压缩/重新生成改写，自定义事件本来也不落库）。
      */
     private ChatStreamEvent handleCustomEvent(CustomEvent customEvent, String sessionId) {
-        String name = customEvent.getName();
-        if (FileGenMiddleware.EVENT_FILE_GENERATED.equals(name)) {
-            // 从 CustomEvent 中获取 FileInfo 对象（已序列化为 Map）
-            java.util.Map<String, Object> data = customEvent.getValue();
-            String filePath = (String) data.getOrDefault("fileUrl", "");
-            String messageId = (String) data.getOrDefault("messageId", "");
-            String fileName = (String) data.getOrDefault("fileName", "");
-            Long fileSize = data.get("fileSize") instanceof Long ? (Long) data.get("fileSize") : null;
-            String fileType = (String) data.getOrDefault("fileType", "text/plain");
-
-            FileInfo fileInfo = FileInfo.builder()
-                    .fileName(fileName)
-                    .fileUrl(filePath)
-                    .fileSize(fileSize)
-                    .fileType(fileType)
-                    .messageId(messageId)
-                    .build();
-
-            return ChatStreamEvent.builder()
-                    .type(MyAgentEvent.FILE)
-                    .sessionId(sessionId)
-                    .fileInfo(fileInfo)
-                    .build();
-        }
-        // 未识别的 CustomEvent
         return ChatStreamEvent.builder()
                 .type(MyAgentEvent.OTHER)
                 .sessionId(sessionId)
-                .metadata(java.util.Map.of("customName", name))
+                .metadata(java.util.Map.of("customName", String.valueOf(customEvent.getName())))
                 .build();
     }
 
